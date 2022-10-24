@@ -1,10 +1,12 @@
-name: "Release v0.2.x"
+name: "Release dagger-cue"
 
 # Only a single job with this concurrency can run at any given time
-concurrency: release-v0.2.x
+concurrency: release-dagger-cue
 
 on:
   # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#onworkflow_dispatchinputs
+  #
+  # This workflow can only be triggered manually.
   workflow_dispatch:
     inputs:
       release_version:
@@ -64,18 +66,21 @@ jobs:
       # This explains why we need to do it separately, on top of GoReleaser updating our Homebrew tap:
       # - https://github.com/Homebrew/homebrew-core/pull/105746#issuecomment-1190522063
       # - https://github.com/dagger/dagger/issues/2823#issuecomment-1190792261
-      - name: "Update homebrew-core formula"
-        # https://github.com/mislav/bump-homebrew-formula-action
-        uses: mislav/bump-homebrew-formula-action@v2
-        with:
-          download-url: https://github.com/dagger/dagger.git
-          formula-name: dagger
-          tag-name: ${{ github.event.inputs.release_version }}
-          commit-message: |
-            {{formulaName}} {{version}}
+      #
+      # TODO: This is temporarily disabled, until we finalise the dagger -> dagger-cue rename
+      # https://github.com/dagger/dagger/issues/3471
+      # - name: "Update homebrew-core formula"
+      #   # https://github.com/mislav/bump-homebrew-formula-action
+      #   uses: mislav/bump-homebrew-formula-action@v2
+      #   with:
+      #     download-url: https://github.com/dagger/dagger.git
+      #     formula-name: dagger
+      #     tag-name: ${{ github.event.inputs.release_version }}
+      #     commit-message: |
+      #       {{formulaName}} {{version}}
 
-            Created by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      #       Created by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            If there is problem with this PR, [open an issue](https://github.com/dagger/dagger/issues/new). The right people will be automatically notified.
-        env:
-          COMMITTER_TOKEN: ${{ secrets.RELEASE_DAGGER_CI_TOKEN }}
+      #       If there is problem with this PR, [open an issue](https://github.com/dagger/dagger/issues/new). The right people will be automatically notified.
+      #   env:
+      #     COMMITTER_TOKEN: ${{ secrets.RELEASE_DAGGER_CI_TOKEN }}
