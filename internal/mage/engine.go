@@ -14,10 +14,6 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-const (
-	engineImage = "ghcr.io/dagger/engine"
-)
-
 func parseRef(tag string) error {
 	if tag == "main" {
 		return nil
@@ -73,13 +69,18 @@ func (t Engine) Publish(ctx context.Context, version string) error {
 		return err
 	}
 
-	ref := fmt.Sprintf("%s:%s", engineImage, version)
-
 	c, err := dagger.Connect(ctx, dagger.WithLogOutput(os.Stderr))
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+
+	engineImage, err := util.WithSetHostVar(ctx, c.Host(), "DAGGER_ENGINE_IMAGE").Value(ctx)
+	if err != nil {
+		return err
+	}
+
+	ref := fmt.Sprintf("%s:%s", engineImage, version)
 
 	return util.WithDevEngine(ctx, c, func(ctx context.Context, c *dagger.Client) error {
 		arches := []string{"amd64", "arm64"}
