@@ -1,0 +1,26 @@
+name: Trace GitHub Actions Workflows
+
+on:
+  workflow_run:
+    workflows:
+      - "Engine & CLI"
+      - "Go SDK"
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  otel-export-trace:
+    name: OpenTelemetry Export Trace
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'dagger/dagger' }}
+    steps:
+      - name: Export Workflow Trace
+        uses: inception-health/otel-export-trace-action@latest
+        with:
+          otlpEndpoint: grpc://api.honeycomb.io:443/
+          otlpHeaders: ${{ secrets.HONEYCOMB_GITHUB_ACTIONS_WORKFLOWS }}
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          runId: ${{ github.event.workflow_run.id }}
