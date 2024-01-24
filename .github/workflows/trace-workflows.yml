@@ -15,7 +15,7 @@ jobs:
   otel-export-trace:
     name: OpenTelemetry Export Trace
     runs-on: ubuntu-latest
-    if: ${{ github.repository == 'dagger/dagger' }}
+    # if: ${{ github.repository == 'dagger/dagger' }}
     steps:
       - name: Export Workflow Trace
         uses: inception-health/otel-export-trace-action@latest
