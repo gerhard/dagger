@@ -5,6 +5,21 @@ on:
     workflows:
       - "Engine & CLI"
       - "Go SDK"
+      - "Elixir SDK"
+      - "Java SDK"
+      - "Python SDK"
+      - "Rust SDK"
+      - "TypeScript SDK"
+      - "Docs"
+      - "Helm"
+      - "Publish Helm Chart"
+      - "Publish Elixir SDK"
+      - "Publish Go SDK"
+      - "Publish PHP SDK"
+      - "Publish Python SDK"
+      - "Publish Rust SDK"
+      - "Publish TypeScript SDK"
+      - "Publish CLI & Engine"    
     types:
       - completed
 
@@ -12,8 +27,8 @@ permissions:
   contents: read
 
 jobs:
-  otel-export-trace:
-    name: OpenTelemetry Export Trace
+  run:
+    name: Export '${{ github.event_name }}' workflow trace
     runs-on: ubuntu-latest
     # if: ${{ github.repository == 'dagger/dagger' }}
     steps:
@@ -22,5 +37,6 @@ jobs:
         with:
           otlpEndpoint: grpc://api.honeycomb.io:443/
           otlpHeaders: ${{ secrets.HONEYCOMB_GITHUB_ACTIONS_WORKFLOWS }}
+          otelServiceName: gerhard-github-actions
           githubToken: ${{ secrets.GITHUB_TOKEN }}
           runId: ${{ github.event.workflow_run.id }}
