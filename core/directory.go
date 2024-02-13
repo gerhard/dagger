@@ -22,6 +22,7 @@ import (
 	"github.com/vito/progrock"
 
 	"github.com/dagger/dagger/core/pipeline"
+	"github.com/dagger/dagger/dagql"
 	"github.com/dagger/dagger/engine/buildkit"
 )
 
@@ -502,6 +503,33 @@ func (dir *Directory) WithFile(
 	return dir, nil
 }
 
+// TODO: address https://github.com/dagger/dagger/pull/6556/files#r1482830091
+func (dir *Directory) WithFiles(
+	ctx context.Context,
+	destDir string,
+	src []*File,
+	permissions *int,
+	owner *Ownership,
+) (*Directory, error) {
+	dir = dir.Clone()
+
+	var err error
+	for _, file := range src {
+		dir, err = dir.WithFile(
+			ctx,
+			path.Join(destDir, path.Base(file.File)),
+			file,
+			permissions,
+			owner,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return dir, nil
+}
+
 type mergeStateInput struct {
 	Dest         llb.State
 	DestDir      string
@@ -720,6 +748,39 @@ func (dir *Directory) Root() (*Directory, error) {
 	dir = dir.Clone()
 	dir.Dir = "/"
 	return dir, nil
+}
+
+// AsBlob converts this directory into a stable content addressed blob, valid for the duration of the current
+// session. Currently only used internally to support local module sources.
+func (dir *Directory) AsBlob(
+	ctx context.Context,
+	srv *dagql.Server,
+) (inst dagql.Instance[*Directory], rerr error) {
+	// currently, all layers need to be squashed to 1 for DefToBlob to work, so
+	// unconditionally copy to scratch
+	src, err := dir.State()
+	if err != nil {
+		return inst, fmt.Errorf("failed to get dir state: %w", err)
+	}
+	src = llb.Scratch().File(llb.Copy(src, dir.Dir, ".", &llb.CopyInfo{
+		CopyDirContentsOnly: true,
+	}))
+	def, err := src.Marshal(ctx, llb.Platform(dir.Platform.Spec()))
+	if err != nil {
+		return inst, fmt.Errorf("failed to marshal dir state: %w", err)
+	}
+	pbDef := def.ToPB()
+
+	_, desc, err := dir.Query.Buildkit.DefToBlob(ctx, pbDef)
+	if err != nil {
+		return inst, fmt.Errorf("failed to get blob descriptor: %w", err)
+	}
+
+	inst, err = LoadBlob(ctx, srv, desc)
+	if err != nil {
+		return inst, fmt.Errorf("failed to load blob: %w", err)
+	}
+	return inst, nil
 }
 
 func validateFileName(file string) error {

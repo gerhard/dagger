@@ -319,17 +319,6 @@ type Container {
   rootfs: Directory!
 
   """
-  Return an interactive terminal for this container using its configured shell
-  if not overridden by args (or sh as a fallback default).
-  """
-  shell(
-    """
-    If set, override the container's default shell and invoke these arguments instead.
-    """
-    args: [String!]
-  ): Terminal!
-
-  """
   The error stream of the last executed command.
   
   Will execute default command if none is set, or error if there's no default.
@@ -350,6 +339,17 @@ type Container {
   """
   sync: ContainerID!
 
+  """
+  Return an interactive terminal for this container using its configured default
+  terminal command if not overridden by args (or sh as a fallback default).
+  """
+  terminal(
+    """
+    If set, override the container's default terminal command and invoke these command arguments instead.
+    """
+    cmd: [String!]
+  ): Terminal!
+
   """Retrieves the user to be set for all commands."""
   user: String!
 
@@ -361,9 +361,9 @@ type Container {
     args: [String!]!
   ): Container!
 
-  """Set the default command to invoke for the "shell" API."""
-  withDefaultShell(
-    """The args of the command to set the default shell to."""
+  """Set the default command to invoke for the container's terminal API."""
+  withDefaultTerminalCmd(
+    """The args of the command."""
     args: [String!]!
   ): Container!
 
@@ -512,6 +512,29 @@ type Container {
 
     """Identifier of the file to copy."""
     source: FileID!
+  ): Container!
+
+  """
+  Retrieves this container plus the contents of the given files copied to the given path.
+  """
+  withFiles(
+    """
+    A user:group to set for the files.
+    
+    The user and group can either be an ID (1000:1000) or a name (foo:bar).
+    
+    If the group is omitted, it defaults to the same as the user.
+    """
+    owner: String = ""
+
+    """Location where copied files should be placed (e.g., "/src")."""
+    path: String!
+
+    """Permission given to the copied files (e.g., 0600)."""
+    permissions: Int
+
+    """Identifiers of the files to copy."""
+    sources: [FileID!]!
   ): Container!
 
   """
@@ -825,12 +848,62 @@ The `ContainerID` scalar type represents an identifier for an object of type Con
 """
 scalar ContainerID
 
+"""Reflective module API provided to functions at runtime."""
+type CurrentModule {
+  """A unique identifier for this CurrentModule."""
+  id: CurrentModuleID!
+
+  """The name of the module being executed in"""
+  name: String!
+
+  """
+  The directory containing the module's source code loaded into the engine (plus
+  any generated code that may have been created).
+  """
+  source: Directory!
+
+  """
+  Load a directory from the module's scratch working directory, including any
+  changes that may have been made to it during module function execution.
+  """
+  workdir(
+    """
+    Exclude artifacts that match the given pattern (e.g., ["node_modules/", ".git*"]).
+    """
+    exclude: [String!] = []
+
+    """
+    Include only artifacts that match the given pattern (e.g., ["app/", "package.*"]).
+    """
+    include: [String!] = []
+
+    """Location of the directory to access (e.g., ".")."""
+    path: String!
+  ): Directory!
+
+  """
+  Load a file from the module's scratch working directory, including any changes
+  that may have been made to it during module function execution.Load a file
+  from the module's scratch working directory, including any changes that may
+  have been made to it during module function execution.
+  """
+  workdirFile(
+    """Location of the file to retrieve (e.g., "README.md")."""
+    path: String!
+  ): File!
+}
+
+"""
+The `CurrentModuleID` scalar type represents an identifier for an object of type CurrentModule.
+"""
+scalar CurrentModuleID
+
 """A directory."""
 type Directory {
   """Load the directory as a Dagger module"""
   asModule(
     """
-    An optional subpath of the directory which contains the module's source code.
+    An optional subpath of the directory which contains the module's configuration file.
     
     This is needed when the module code is in a subdirectory but requires parent
     directories to be loaded in order to execute. For example, the module source
@@ -838,7 +911,7 @@ type Directory {
     
     If not set, the module source code is loaded from the root of the directory.
     """
-    sourceSubpath: String = ""
+    sourceRootPath: String = "."
   ): Module!
 
   """Gets the difference between this directory and an another directory."""
@@ -951,6 +1024,20 @@ type Directory {
   ): Directory!
 
   """
+  Retrieves this directory plus the contents of the given files copied to the given path.
+  """
+  withFiles(
+    """Location where copied files should be placed (e.g., "/src")."""
+    path: String!
+
+    """Permission given to the copied files (e.g., 0600)."""
+    permissions: Int
+
+    """Identifiers of the files to copy."""
+    sources: [FileID!]!
+  ): Directory!
+
+  """
   Retrieves this directory plus a new directory created at the given path.
   """
   withNewDirectory(
@@ -1007,7 +1094,11 @@ scalar DirectoryID
 type EnvVariable {
   """A unique identifier for this EnvVariable."""
   id: EnvVariableID!
+
+  """The environment variable name."""
   name: String!
+
+  """The environment variable value."""
   value: String!
 }
 
@@ -1023,11 +1114,16 @@ A field on an object has a static value, as opposed to a function on an object
 whose value is computed by invoking code (and can accept arguments).
 """
 type FieldTypeDef {
+  """A doc string for the field, if any."""
   description: String!
 
   """A unique identifier for this FieldTypeDef."""
   id: FieldTypeDefID!
+
+  """The name of the field in lowerCamelCase format."""
   name: String!
+
+  """The type of the field."""
   typeDef: TypeDef!
 }
 
@@ -1089,12 +1185,19 @@ Function represents a resolver provided by a Module.
 A function always evaluates against a parent object and is given a set of named arguments.
 """
 type Function {
+  """Arguments accepted by the function, if any."""
   args: [FunctionArg!]!
+
+  """A doc string for the function, if any."""
   description: String!
 
   """A unique identifier for this Function."""
   id: FunctionID!
+
+  """The name of the function."""
   name: String!
+
+  """The type returned by the function."""
   returnType: TypeDef!
 
   """Returns the function with the provided argument"""
@@ -1127,12 +1230,21 @@ An argument accepted by a function.
 This is a specification for an argument at function definition time, not an argument passed at function call time.
 """
 type FunctionArg {
+  """
+  A default value to use for this argument when not explicitly set by the caller, if any.
+  """
   defaultValue: JSON!
+
+  """A doc string for the argument, if any."""
   description: String!
 
   """A unique identifier for this FunctionArg."""
   id: FunctionArgID!
+
+  """The name of the argument in lowerCamelCase format."""
   name: String!
+
+  """The type of the argument."""
   typeDef: TypeDef!
 }
 
@@ -1145,9 +1257,23 @@ scalar FunctionArgID
 type FunctionCall {
   """A unique identifier for this FunctionCall."""
   id: FunctionCallID!
+
+  """The argument values the function is being invoked with."""
   inputArgs: [FunctionCallArgValue!]!
+
+  """The name of the function being called."""
   name: String!
+
+  """
+  The value of the parent object of the function being called. If the function
+  is top-level to the module, this is always an empty object.
+  """
   parent: JSON!
+
+  """
+  The name of the parent object of the function being called. If the function is
+  top-level to the module, this is the name of the module.
+  """
   parentName: String!
 
   """Set the return value of the function call to the provided value."""
@@ -1161,7 +1287,11 @@ type FunctionCall {
 type FunctionCallArgValue {
   """A unique identifier for this FunctionCallArgValue."""
   id: FunctionCallArgValueID!
+
+  """The name of the argument."""
   name: String!
+
+  """The value of the argument represented as a JSON serialized string."""
   value: JSON!
 }
 
@@ -1182,11 +1312,18 @@ scalar FunctionID
 
 """The result of running an SDK's codegen."""
 type GeneratedCode {
+  """The directory containing the generated code."""
   code: Directory!
 
   """A unique identifier for this GeneratedCode."""
   id: GeneratedCodeID!
+
+  """
+  List of paths to mark generated in version control (i.e. .gitattributes).
+  """
   vcsGeneratedPaths: [String!]!
+
+  """List of paths to ignore in version control (i.e. .gitignore)."""
   vcsIgnoredPaths: [String!]!
 
   """Set the list of paths to mark generated in version control."""
@@ -1200,6 +1337,41 @@ type GeneratedCode {
 The `GeneratedCodeID` scalar type represents an identifier for an object of type GeneratedCode.
 """
 scalar GeneratedCodeID
+
+"""Module source originating from a git repo."""
+type GitModuleSource {
+  """The URL from which the source's git repo can be cloned."""
+  cloneURL: String!
+
+  """The resolved commit of the git repo this source points to."""
+  commit: String!
+
+  """
+  The directory containing everything needed to load load and use the module.
+  """
+  contextDirectory: Directory!
+
+  """The URL to the source's git repo in a web browser"""
+  htmlURL: String!
+
+  """A unique identifier for this GitModuleSource."""
+  id: GitModuleSourceID!
+
+  """
+  The path to the root of the module source under the context directory. This
+  directory contains its configuration file. It also contains its source code
+  (possibly as a subdirectory).
+  """
+  rootSubpath: String!
+
+  """The specified version of the git repo this source points to."""
+  version: String!
+}
+
+"""
+The `GitModuleSourceID` scalar type represents an identifier for an object of type GitModuleSource.
+"""
+scalar GitModuleSourceID
 
 """A git ref (tag, branch, or commit)."""
 type GitRef {
@@ -1242,6 +1414,14 @@ type GitRepository {
 
   """A unique identifier for this GitRepository."""
   id: GitRepositoryID!
+
+  """Returns details of a ref."""
+  ref(
+    """
+    Ref's name (can be a commit identifier, a tag name, a branch name, or a fully-qualified ref).
+    """
+    name: String!
+  ): GitRef!
 
   """Returns details of a tag."""
   tag(
@@ -1371,10 +1551,13 @@ in the core API. It is not used by user modules and shouldn't ever be as user
 module accept input objects via their id rather than graphql input types.
 """
 type InputTypeDef {
+  """Static fields defined on this input object, if any."""
   fields: [FieldTypeDef!]!
 
   """A unique identifier for this InputTypeDef."""
   id: InputTypeDefID!
+
+  """The name of the input object."""
   name: String!
 }
 
@@ -1385,12 +1568,21 @@ scalar InputTypeDefID
 
 """A definition of a custom interface defined in a Module."""
 type InterfaceTypeDef {
+  """The doc string for the interface, if any."""
   description: String!
+
+  """Functions defined on this interface, if any."""
   functions: [Function!]!
 
   """A unique identifier for this InterfaceTypeDef."""
   id: InterfaceTypeDefID!
+
+  """The name of the interface."""
   name: String!
+
+  """
+  If this InterfaceTypeDef is associated with a Module, the name of the module. Unset otherwise.
+  """
   sourceModuleName: String!
 }
 
@@ -1406,7 +1598,11 @@ scalar JSON
 type Label {
   """A unique identifier for this Label."""
   id: LabelID!
+
+  """The label name."""
   name: String!
+
+  """The label value."""
   value: String!
 }
 
@@ -1417,6 +1613,7 @@ scalar LabelID
 
 """A definition of a list type in a Module."""
 type ListTypeDef {
+  """The type of the elements in the list."""
   elementTypeDef: TypeDef!
 
   """A unique identifier for this ListTypeDef."""
@@ -1428,21 +1625,76 @@ The `ListTypeDefID` scalar type represents an identifier for an object of type L
 """
 scalar ListTypeDefID
 
+"""
+Module source that that originates from a path locally relative to an arbitrary directory.
+"""
+type LocalModuleSource {
+  """
+  The directory containing everything needed to load load and use the module.
+  """
+  contextDirectory: Directory!
+
+  """A unique identifier for this LocalModuleSource."""
+  id: LocalModuleSourceID!
+
+  """
+  The path to the root of the module source under the context directory. This
+  directory contains its configuration file. It also contains its source code
+  (possibly as a subdirectory).
+  """
+  rootSubpath: String!
+}
+
+"""
+The `LocalModuleSourceID` scalar type represents an identifier for an object of type LocalModuleSource.
+"""
+scalar LocalModuleSourceID
+
 """A Dagger module."""
 type Module {
+  """Modules used by this module."""
   dependencies: [Module!]!
-  dependencyConfig: [String!]!
-  description: String
-  generatedCode: GeneratedCode!
+
+  """The dependencies as configured by the module."""
+  dependencyConfig: [ModuleDependency!]!
+
+  """The doc string of the module, if any"""
+  description: String!
+
+  """
+  The generated files and directories made on top of the module source's context directory.
+  """
+  generatedContextDiff: Directory!
+
+  """
+  The module source's context plus any configuration and source files created by codegen.
+  """
+  generatedContextDirectory: Directory!
 
   """A unique identifier for this Module."""
   id: ModuleID!
 
   """Retrieves the module with the objects loaded via its SDK."""
   initialize: Module!
+
+  """Interfaces served by this module."""
   interfaces: [TypeDef!]!
+
+  """The name of the module"""
   name: String!
+
+  """Objects served by this module."""
   objects: [TypeDef!]!
+
+  """
+  The container that runs the module's entrypoint. It will fail to execute if the module doesn't compile.
+  """
+  runtime: Container!
+
+  """
+  The SDK used by this module. Either a name of a builtin SDK or a module source
+  ref string pointing to the SDK's implementation.
+  """
   sdk: String!
 
   """
@@ -1452,8 +1704,15 @@ type Module {
   a stream or service to remove the side effect.
   """
   serve: Void
-  sourceDirectory: Directory!
-  sourceDirectorySubpath: String!
+
+  """The source for the module."""
+  source: ModuleSource!
+
+  """Retrieves the module with the given description"""
+  withDescription(
+    """The description to set"""
+    description: String!
+  ): Module!
 
   """This module plus the given Interface type and associated functions"""
   withInterface(iface: TypeDefID!): Module!
@@ -1461,50 +1720,166 @@ type Module {
   """This module plus the given Object type and associated functions."""
   withObject(object: TypeDefID!): Module!
 
-  """
-  Retrieves the module with basic configuration loaded, ready for initialization.
-  """
+  """Retrieves the module with basic configuration loaded if present."""
   withSource(
-    """The directory containing the module's source code."""
-    directory: DirectoryID!
-
-    """
-    An optional subpath of the directory which contains the module's source code.
-    
-    This is needed when the module code is in a subdirectory but requires parent
-    directories to be loaded in order to execute. For example, the module source
-    code may need a go.mod, project.toml, package.json, etc. file from a parent directory.
-    
-    If not set, the module source code is loaded from the root of the directory.
-    """
-    subpath: String = ""
+    """The module source to initialize from."""
+    source: ModuleSourceID!
   ): Module!
 }
 
-"""
-Static configuration for a module (e.g. parsed contents of dagger.json)
-"""
-type ModuleConfig {
-  dependencies: [String!]!
-  exclude: [String!]!
+"""The configuration of dependency of a module."""
+type ModuleDependency {
+  """A unique identifier for this ModuleDependency."""
+  id: ModuleDependencyID!
 
-  """A unique identifier for this ModuleConfig."""
-  id: ModuleConfigID!
-  include: [String!]!
+  """The name of the dependency module."""
   name: String!
-  root: String!
-  sdk: String!
+
+  """The source for the dependency module."""
+  source: ModuleSource!
 }
 
 """
-The `ModuleConfigID` scalar type represents an identifier for an object of type ModuleConfig.
+The `ModuleDependencyID` scalar type represents an identifier for an object of type ModuleDependency.
 """
-scalar ModuleConfigID
+scalar ModuleDependencyID
 
 """
 The `ModuleID` scalar type represents an identifier for an object of type Module.
 """
 scalar ModuleID
+
+"""
+The source needed to load and run a module, along with any metadata about the source such as versions/urls/etc.
+"""
+type ModuleSource {
+  """If the source is a of kind git, the git source representation of it."""
+  asGitSource: GitModuleSource
+
+  """If the source is of kind local, the local source representation of it."""
+  asLocalSource: LocalModuleSource
+
+  """
+  Load the source as a module. If this is a local source, the parent directory
+  must have been provided during module source creation
+  """
+  asModule: Module!
+
+  """A human readable ref string representation of this module source."""
+  asString: String!
+
+  """Returns whether the module source has a configuration file."""
+  configExists: Boolean!
+
+  """
+  The directory containing everything needed to load load and use the module.
+  """
+  contextDirectory: Directory!
+
+  """
+  The dependencies of the module source. Includes dependencies from the
+  configuration and any extras from withDependencies calls.
+  """
+  dependencies: [ModuleDependency!]!
+
+  """
+  The directory containing the module configuration and source code (source code may be in a subdir).
+  """
+  directory(
+    """The path from the source directory to select."""
+    path: String!
+  ): Directory!
+
+  """A unique identifier for this ModuleSource."""
+  id: ModuleSourceID!
+
+  """The kind of source (e.g. local, git, etc.)"""
+  kind: ModuleSourceKind!
+
+  """
+  If set, the name of the module this source references, including any overrides at runtime by callers.
+  """
+  moduleName: String!
+
+  """
+  The original name of the module this source references, as defined in the module configuration.
+  """
+  moduleOriginalName: String!
+
+  """
+  The path to the module source's context directory on the caller's filesystem. Only valid for local sources.
+  """
+  resolveContextPathFromCaller: String!
+
+  """
+  Resolve the provided module source arg as a dependency relative to this module source.
+  """
+  resolveDependency(
+    """The dependency module source to resolve."""
+    dep: ModuleSourceID!
+  ): ModuleSource!
+
+  """
+  Load the source from its path on the caller's filesystem, including only
+  needed+configured files and directories. Only valid for local sources.
+  """
+  resolveFromCaller: ModuleSource!
+
+  """
+  The path relative to context of the root of the module source, which contains
+  dagger.json. It also contains the module implementation source code, but that
+  may or may not being a subdir of this root.
+  """
+  sourceRootSubpath: String!
+
+  """The path relative to context of the module implementation source code."""
+  sourceSubpath: String!
+
+  """
+  Update the module source with a new context directory. Only valid for local sources.
+  """
+  withContextDirectory(
+    """The directory to set as the context directory."""
+    dir: DirectoryID!
+  ): ModuleSource!
+
+  """
+  Append the provided dependencies to the module source's dependency list.
+  """
+  withDependencies(
+    """The dependencies to append."""
+    dependencies: [ModuleDependencyID!]!
+  ): ModuleSource!
+
+  """Update the module source with a new name."""
+  withName(
+    """The name to set."""
+    name: String!
+  ): ModuleSource!
+
+  """Update the module source with a new SDK."""
+  withSDK(
+    """The SDK to set."""
+    sdk: String!
+  ): ModuleSource!
+
+  """Update the module source with a new source subpath."""
+  withSourceSubpath(
+    """The path to set as the source subpath."""
+    path: String!
+  ): ModuleSource!
+}
+
+"""
+The `ModuleSourceID` scalar type represents an identifier for an object of type ModuleSource.
+"""
+scalar ModuleSourceID
+
+"""The kind of module source."""
+enum ModuleSourceKind {
+  LOCAL_SOURCE
+  GIT_SOURCE
+}
 
 """Transport layer network protocol associated to a port."""
 enum NetworkProtocol {
@@ -1514,14 +1889,27 @@ enum NetworkProtocol {
 
 """A definition of a custom object defined in a Module."""
 type ObjectTypeDef {
+  """The function used to construct new instances of this object, if any"""
   constructor: Function
+
+  """The doc string for the object, if any."""
   description: String!
+
+  """Static fields defined on this object, if any."""
   fields: [FieldTypeDef!]!
+
+  """Functions defined on this object, if any."""
   functions: [Function!]!
 
   """A unique identifier for this ObjectTypeDef."""
   id: ObjectTypeDefID!
+
+  """The name of the object."""
   name: String!
+
+  """
+  If this ObjectTypeDef is associated with a Module, the name of the module. Unset otherwise.
+  """
   sourceModuleName: String!
 }
 
@@ -1548,12 +1936,19 @@ scalar Platform
 
 """A port exposed by a container."""
 type Port {
+  """The port description."""
   description: String
+
+  """Skip the health check when run as a service."""
   experimentalSkipHealthcheck: Boolean!
 
   """A unique identifier for this Port."""
   id: PortID!
+
+  """The port number."""
   port: Int!
+
+  """The transport layer protocol."""
   protocol: NetworkProtocol!
 }
 
@@ -1629,7 +2024,7 @@ type Query {
   currentFunctionCall: FunctionCall!
 
   """The module currently being served in the session, if any."""
-  currentModule: Module!
+  currentModule: CurrentModule!
 
   """
   The TypeDef representations of the objects currently being served in the session.
@@ -1704,6 +2099,9 @@ type Query {
   """Load a Container from its ID."""
   loadContainerFromID(id: ContainerID!): Container!
 
+  """Load a CurrentModule from its ID."""
+  loadCurrentModuleFromID(id: CurrentModuleID!): CurrentModule!
+
   """Load a Directory from its ID."""
   loadDirectoryFromID(id: DirectoryID!): Directory!
 
@@ -1731,6 +2129,9 @@ type Query {
   """Load a GeneratedCode from its ID."""
   loadGeneratedCodeFromID(id: GeneratedCodeID!): GeneratedCode!
 
+  """Load a GitModuleSource from its ID."""
+  loadGitModuleSourceFromID(id: GitModuleSourceID!): GitModuleSource!
+
   """Load a GitRef from its ID."""
   loadGitRefFromID(id: GitRefID!): GitRef!
 
@@ -1752,11 +2153,17 @@ type Query {
   """Load a ListTypeDef from its ID."""
   loadListTypeDefFromID(id: ListTypeDefID!): ListTypeDef!
 
-  """Load a ModuleConfig from its ID."""
-  loadModuleConfigFromID(id: ModuleConfigID!): ModuleConfig!
+  """Load a LocalModuleSource from its ID."""
+  loadLocalModuleSourceFromID(id: LocalModuleSourceID!): LocalModuleSource!
+
+  """Load a ModuleDependency from its ID."""
+  loadModuleDependencyFromID(id: ModuleDependencyID!): ModuleDependency!
 
   """Load a Module from its ID."""
   loadModuleFromID(id: ModuleID!): Module!
+
+  """Load a ModuleSource from its ID."""
+  loadModuleSourceFromID(id: ModuleSourceID!): ModuleSource!
 
   """Load a ObjectTypeDef from its ID."""
   loadObjectTypeDefFromID(id: ObjectTypeDefID!): ObjectTypeDef!
@@ -1783,9 +2190,29 @@ type Query {
   module: Module!
 
   """
-  Load the static configuration for a module from the given source directory and optional subpath.
+  Create a new module dependency configuration from a module source and name
   """
-  moduleConfig(sourceDirectory: DirectoryID!, subpath: String = ""): ModuleConfig!
+  moduleDependency(
+    """
+    If set, the name to use for the dependency. Otherwise, once installed to a
+    parent module, the name of the dependency module will be used by default.
+    """
+    name: String = ""
+
+    """The source of the dependency"""
+    source: ModuleSourceID!
+  ): ModuleDependency!
+
+  """Create a new module source instance from a source ref string."""
+  moduleSource(
+    """The string ref representation of the module source"""
+    refString: String!
+
+    """
+    If true, enforce that the source is a stable version for source kinds that support versioning.
+    """
+    stable: Boolean = false
+  ): ModuleSource!
 
   """Creates a named sub-pipeline."""
   pipeline(
@@ -1874,12 +2301,25 @@ type Service {
   start: ServiceID!
 
   """Stop the service."""
-  stop: ServiceID!
+  stop(
+    """Immediately kill the service without waiting for a graceful exit"""
+    kill: Boolean = false
+  ): ServiceID!
 
   """
   Creates a tunnel that forwards traffic from the caller's network to this service.
   """
-  up(native: Boolean = false, ports: [PortForward!] = []): Void
+  up(
+    """
+    List of frontend/backend port mappings to forward.
+    
+    Frontend is the port accepting traffic on the host, backend is the service port.
+    """
+    ports: [PortForward!] = []
+
+    """Bind each tunnel port to a random port on the host."""
+    random: Boolean = false
+  ): Void
 }
 
 """
@@ -1916,14 +2356,33 @@ scalar TerminalID
 
 """A definition of a parameter or return type in a Module."""
 type TypeDef {
+  """
+  If kind is INPUT, the input-specific type definition. If kind is not INPUT, this will be null.
+  """
   asInput: InputTypeDef
+
+  """
+  If kind is INTERFACE, the interface-specific type definition. If kind is not INTERFACE, this will be null.
+  """
   asInterface: InterfaceTypeDef
+
+  """
+  If kind is LIST, the list-specific type definition. If kind is not LIST, this will be null.
+  """
   asList: ListTypeDef
+
+  """
+  If kind is OBJECT, the object-specific type definition. If kind is not OBJECT, this will be null.
+  """
   asObject: ObjectTypeDef
 
   """A unique identifier for this TypeDef."""
   id: TypeDefID!
+
+  """The kind of type this is (e.g. primitive, list, object)."""
   kind: TypeDefKind!
+
+  """Whether this type can be set to null. Defaults to false."""
   optional: Boolean!
 
   """

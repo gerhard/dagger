@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	sync "sync"
 
 	"github.com/opencontainers/go-digest"
 	"github.com/vektah/gqlparser/v2/ast"
@@ -15,8 +16,60 @@ func New() *ID {
 	return nil
 }
 
-func (id *ID) Modules() []*ID {
-	allMods := []*ID{}
+func (id *ID) Inputs() ([]digest.Digest, error) {
+	seen := map[digest.Digest]struct{}{}
+	var inputs []digest.Digest
+	for _, arg := range id.Args {
+		ins, err := arg.Value.Inputs()
+		if err != nil {
+			return nil, err
+		}
+		for _, in := range ins {
+			if _, ok := seen[in]; ok {
+				continue
+			}
+			seen[in] = struct{}{}
+			inputs = append(inputs, in)
+		}
+	}
+	return inputs, nil
+}
+
+func (lit *Literal) Inputs() ([]digest.Digest, error) {
+	switch x := lit.Value.(type) {
+	case *Literal_Id:
+		dig, err := x.Id.Digest()
+		if err != nil {
+			return nil, err
+		}
+		return []digest.Digest{dig}, nil
+	case *Literal_List:
+		var inputs []digest.Digest
+		for _, v := range x.List.Values {
+			ins, err := v.Inputs()
+			if err != nil {
+				return nil, err
+			}
+			inputs = append(inputs, ins...)
+		}
+		return inputs, nil
+	case *Literal_Object:
+		var inputs []digest.Digest
+		for _, v := range x.Object.Values {
+			ins, err := v.Value.Inputs()
+			if err != nil {
+				return nil, err
+			}
+			inputs = append(inputs, ins...)
+		}
+		return inputs, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (id *ID) Modules() []*Module {
+	allMods := []*Module{}
 	for id != nil {
 		if id.Module != nil {
 			allMods = append(allMods, id.Module)
@@ -24,12 +77,12 @@ func (id *ID) Modules() []*ID {
 		for _, arg := range id.Args {
 			allMods = append(allMods, arg.Value.Modules()...)
 		}
-		id = id.Parent
+		id = id.Base
 	}
 	seen := map[digest.Digest]struct{}{}
-	deduped := []*ID{}
+	deduped := []*Module{}
 	for _, mod := range allMods {
-		dig, err := mod.Digest()
+		dig, err := mod.Id.Digest()
 		if err != nil {
 			panic(err)
 		}
@@ -44,8 +97,8 @@ func (id *ID) Modules() []*ID {
 
 func (id *ID) Path() string {
 	buf := new(bytes.Buffer)
-	if id.Parent != nil {
-		fmt.Fprintf(buf, "%s.", id.Parent.Path())
+	if id.Base != nil {
+		fmt.Fprintf(buf, "%s.", id.Base.Path())
 	}
 	fmt.Fprint(buf, id.DisplaySelf())
 	return buf.String()
@@ -96,7 +149,7 @@ func (id *ID) Append(ret *ast.Type, field string, args ...*Argument) *ID {
 	}
 
 	return &ID{
-		Parent:  id,
+		Base:    id,
 		Type:    NewType(ret),
 		Field:   field,
 		Args:    args,
@@ -111,10 +164,10 @@ func (id *ID) Rebase(root *ID) *ID {
 }
 
 func rebase(id *ID, root *ID) {
-	if id.Parent == nil {
-		id.Parent = root
+	if id.Base == nil {
+		id.Base = root
 	} else {
-		rebase(id.Parent, root)
+		rebase(id.Base, root)
 	}
 }
 
@@ -127,8 +180,8 @@ func (id *ID) IsTainted() bool {
 	if id.Tainted {
 		return true
 	}
-	if id.Parent != nil {
-		return id.Parent.IsTainted()
+	if id.Base != nil {
+		return id.Base.IsTainted()
 	}
 	return false
 }
@@ -136,11 +189,11 @@ func (id *ID) IsTainted() bool {
 // Canonical returns the ID with any contained IDs canonicalized.
 func (id *ID) Canonical() *ID {
 	if id.Meta {
-		return id.Parent.Canonical()
+		return id.Base.Canonical()
 	}
 	canon := id.Clone()
-	if id.Parent != nil {
-		canon.Parent = id.Parent.Canonical()
+	if id.Base != nil {
+		canon.Base = id.Base.Canonical()
 	}
 	// TODO sort args...? is it worth preserving them in the first place? (default answer no)
 	for i, arg := range canon.Args {
@@ -149,14 +202,33 @@ func (id *ID) Canonical() *ID {
 	return canon
 }
 
+var digestCache *sync.Map
+
+// EnableDigestCache enables caching of digests for IDs.
+//
+// This is not thread-safe and should be called before any IDs are created, or
+// at least digested.
+func EnableDigestCache() {
+	digestCache = new(sync.Map)
+}
+
 // Digest returns the digest of the encoded ID. It does NOT canonicalize the ID
 // first.
 func (id *ID) Digest() (digest.Digest, error) {
+	if digestCache != nil {
+		if d, ok := digestCache.Load(id); ok {
+			return d.(digest.Digest), nil
+		}
+	}
 	bytes, err := proto.Marshal(id)
 	if err != nil {
 		return "", err
 	}
-	return digest.FromBytes(bytes), nil
+	d := digest.FromBytes(bytes)
+	if digestCache != nil {
+		digestCache.Store(id, d)
+	}
+	return d, nil
 }
 
 func (id *ID) Clone() *ID {

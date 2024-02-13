@@ -21,3 +21,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_DAGGER_CI_TOKEN }}
           DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - uses: ./.github/workflows/_new_release_notification.yml
+        secrets: inherit
+        with:
+          message: "Dager Helm Chart ${{ github.ref_name }} is now available: https://github.com/dagger/dagger/releases/tag/${{ github_ref_name }}"

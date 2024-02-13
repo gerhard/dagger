@@ -245,6 +245,16 @@ func (s *containerSchema) Install() {
 				`The user and group can either be an ID (1000:1000) or a name (foo:bar).`,
 				`If the group is omitted, it defaults to the same as the user.`),
 
+		dagql.Func("withFiles", s.withFiles).
+			Doc(`Retrieves this container plus the contents of the given files copied to the given path.`).
+			ArgDoc("path", `Location where copied files should be placed (e.g., "/src").`).
+			ArgDoc("sources", `Identifiers of the files to copy.`).
+			ArgDoc("permissions", `Permission given to the copied files (e.g., 0600).`).
+			ArgDoc("owner",
+				`A user:group to set for the files.`,
+				`The user and group can either be an ID (1000:1000) or a name (foo:bar).`,
+				`If the group is omitted, it defaults to the same as the user.`),
+
 		dagql.Func("withNewFile", s.withNewFile).
 			Doc(`Retrieves this container plus a new file written at the given path.`).
 			ArgDoc("path", `Location of the written file (e.g., "/tmp/file.txt").`).
@@ -428,13 +438,13 @@ func (s *containerSchema) Install() {
 			Doc(`Indicate that subsequent operations should not be featured more prominently in the UI.`,
 				`This is the initial state of all containers.`),
 
-		dagql.Func("withDefaultShell", s.withDefaultShell).
-			Doc(`Set the default command to invoke for the "shell" API.`).
-			ArgDoc("args", `The args of the command to set the default shell to.`),
+		dagql.Func("withDefaultTerminalCmd", s.withDefaultTerminalCmd).
+			Doc(`Set the default command to invoke for the container's terminal API.`).
+			ArgDoc("args", `The args of the command.`),
 
-		dagql.NodeFunc("shell", s.shell).
-			Doc(`Return an interactive terminal for this container using its configured shell if not overridden by args (or sh as a fallback default).`).
-			ArgDoc("args", `If set, override the container's default shell and invoke these arguments instead.`),
+		dagql.NodeFunc("terminal", s.terminal).
+			Doc(`Return an interactive terminal for this container using its configured default terminal command if not overridden by args (or sh as a fallback default).`).
+			ArgDoc("cmd", `If set, override the container's default terminal command and invoke these command arguments instead.`),
 
 		dagql.Func("experimentalWithGPU", s.withGPU).
 			Doc(`EXPERIMENTAL API! Subject to change/removal at any time.`,
@@ -1062,6 +1072,24 @@ func (s *containerSchema) withFile(ctx context.Context, parent *core.Container, 
 	return parent.WithFile(ctx, args.Path, file.Self, args.Permissions, args.Owner)
 }
 
+type containerWithFilesArgs struct {
+	WithFilesArgs
+	Owner string `default:""`
+}
+
+func (s *containerSchema) withFiles(ctx context.Context, parent *core.Container, args containerWithFilesArgs) (*core.Container, error) {
+	files := []*core.File{}
+	for _, id := range args.Sources {
+		file, err := id.Load(ctx, s.srv)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file.Self)
+	}
+
+	return parent.WithFiles(ctx, args.Path, files, args.Permissions, args.Owner)
+}
+
 type containerWithNewFileArgs struct {
 	Path        string
 	Contents    string `default:""`
@@ -1143,7 +1171,7 @@ type containerImportArgs struct {
 	Tag    string `default:""`
 }
 
-func (s *containerSchema) import_(ctx context.Context, parent *core.Container, args containerImportArgs) (*core.Container, error) { // nolint:revive
+func (s *containerSchema) import_(ctx context.Context, parent *core.Container, args containerImportArgs) (*core.Container, error) {
 	start := time.Now()
 	slog.Debug("importing container", "source", args.Source.Display(), "tag", args.Tag)
 	defer func() {
@@ -1288,7 +1316,7 @@ func (s *containerSchema) withoutFocus(ctx context.Context, parent *core.Contain
 	return child, nil
 }
 
-func (s *containerSchema) withDefaultShell(
+func (s *containerSchema) withDefaultTerminalCmd(
 	ctx context.Context,
 	ctr *core.Container,
 	args struct {
@@ -1296,23 +1324,23 @@ func (s *containerSchema) withDefaultShell(
 	},
 ) (*core.Container, error) {
 	ctr = ctr.Clone()
-	ctr.DefaultShell = args.Args
+	ctr.DefaultTerminalCmd = args.Args
 	return ctr, nil
 }
 
-func (s *containerSchema) shell(
+func (s *containerSchema) terminal(
 	ctx context.Context,
 	ctr dagql.Instance[*core.Container],
 	args struct {
-		Args dagql.Optional[dagql.ArrayInput[dagql.String]]
+		Cmd *[]string
 	},
 ) (*core.Terminal, error) {
 	var shellArgs []string
-	if args.Args.Valid {
-		shellArgs = collectArrayInput(args.Args.Value, dagql.String.String)
+	if args.Cmd != nil {
+		shellArgs = *args.Cmd
 	} else {
 		// if no override args specified, use default shell
-		shellArgs = ctr.Self.DefaultShell
+		shellArgs = ctr.Self.DefaultTerminalCmd
 	}
 
 	// if still no args, default to sh

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"dagger.io/dagger"
@@ -17,8 +18,10 @@ import (
 const (
 	rustGeneratedAPIPath = "sdk/rust/crates/dagger-sdk/src/gen.rs"
 	rustVersionFilePath  = "sdk/rust/crates/dagger-sdk/src/core/mod.rs"
+
 	// https://hub.docker.com/_/rust
 	rustDockerStable = "rust:1.71-bookworm"
+	cargoChefVersion = "0.1.62"
 )
 
 var _ SDK = Rust{}
@@ -78,7 +81,7 @@ func (r Rust) Generate(ctx context.Context) error {
 	generated := r.rustBase(ctx, c.Pipeline(rustDockerStable), rustDockerStable).
 		WithServiceBinding("dagger-engine", devEngine).
 		WithEnvVariable("_EXPERIMENTAL_DAGGER_RUNNER_HOST", endpoint).
-		WithMountedFile(cliBinPath, util.DaggerBinary(c)).
+		WithMountedFile(cliBinPath, util.DevelDaggerBinary(ctx, c)).
 		WithEnvVariable("_EXPERIMENTAL_DAGGER_CLI_BIN", cliBinPath).
 		WithExec([]string{"cargo", "run", "-p", "dagger-bootstrap", "generate", "--output", fmt.Sprintf("/%s", rustGeneratedAPIPath)}).
 		WithExec([]string{"cargo", "fix", "--all", "--allow-no-vcs"}).
@@ -127,7 +130,7 @@ func (r Rust) Lint(ctx context.Context) error {
 	})
 
 	eg.Go(func() error {
-		return util.LintGeneratedCode(func() error {
+		return util.LintGeneratedCode("sdk:rust:generate", func() error {
 			return r.Generate(gctx)
 		}, rustGeneratedAPIPath)
 	})
@@ -145,9 +148,10 @@ func (r Rust) Publish(ctx context.Context, tag string) error {
 
 	c = c.Pipeline("sdk").Pipeline("rust").Pipeline("publish")
 
+	dryRun, _ := strconv.ParseBool(os.Getenv("DRY_RUN"))
+
 	var (
 		version = strings.TrimPrefix(tag, "sdk/rust/v")
-		dryRun  = os.Getenv("CARGO_PUBLISH_DRYRUN")
 		crate   = "dagger-sdk"
 	)
 
@@ -164,17 +168,15 @@ func (r Rust) Publish(ctx context.Context, tag string) error {
 		"cargo", "publish", "-p", crate, "-v", "--all-features",
 	}
 
-	if dryRun == "false" {
+	if dryRun {
+		args = append(args, "--dry-run")
+		base = base.WithExec(args)
+	} else {
 		base = base.
 			With(util.HostSecretVar(c, "CARGO_REGISTRY_TOKEN")).
 			WithExec(args)
-	} else {
-		args = append(args, "--dry-run")
-		base = base.WithExec(args)
 	}
-
 	_, err = base.Sync(ctx)
-
 	return err
 }
 
@@ -202,7 +204,7 @@ func (r Rust) Test(ctx context.Context) error {
 	_, err = r.rustBase(ctx, c.Pipeline(rustDockerStable), rustDockerStable).
 		WithServiceBinding("dagger-engine", devEngine).
 		WithEnvVariable("_EXPERIMENTAL_DAGGER_RUNNER_HOST", endpoint).
-		WithMountedFile(cliBinPath, util.DaggerBinary(c)).
+		WithMountedFile(cliBinPath, util.DevelDaggerBinary(ctx, c)).
 		WithEnvVariable("_EXPERIMENTAL_DAGGER_CLI_BIN", cliBinPath).
 		WithExec([]string{"rustc", "--version"}).
 		WithExec([]string{"cargo", "test", "--release", "--all"}).
@@ -235,7 +237,7 @@ func (Rust) rustBase(ctx context.Context, c *dagger.Client, image string) *dagge
 		// combine into one layer so there's no assumptions on state of cache volume across steps
 		With(util.ShellCmds(
 			"rustup component add rustfmt",
-			"cargo install cargo-chef",
+			"cargo install --locked cargo-chef@"+cargoChefVersion,
 			"cargo chef prepare --recipe-path /tmp/recipe.json",
 			"cargo chef cook --release --workspace --recipe-path /tmp/recipe.json",
 		)).

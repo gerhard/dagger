@@ -42,6 +42,7 @@ export type TypeDef<T extends BaseTypeDef["kind"]> =
  */
 export type FieldTypeDef = {
   name: string
+  alias?: string
   description: string
   typeDef: TypeDef<TypeDefKind>
   isExposed: boolean
@@ -55,6 +56,7 @@ export type FunctionArg = {
   description: string
   optional: boolean
   defaultValue?: string
+  isVariadic: boolean
   typeDef: TypeDef<TypeDefKind>
 }
 
@@ -64,6 +66,7 @@ export type FunctionArg = {
 export type FunctionTypedef = {
   name: string
   description: string
+  alias?: string
   args: { [name: string]: FunctionArg }
   returnType: TypeDef<TypeDefKind>
 }

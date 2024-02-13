@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dagger/dagger/analytics"
 	"github.com/dagger/dagger/auth"
 	"github.com/dagger/dagger/core"
 	"github.com/dagger/dagger/core/pipeline"
 	"github.com/dagger/dagger/core/schema"
 	"github.com/dagger/dagger/engine"
 	"github.com/dagger/dagger/engine/buildkit"
-	bkclient "github.com/moby/buildkit/client"
 	bksession "github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/util/bklog"
 	bkworker "github.com/moby/buildkit/worker"
@@ -33,6 +33,7 @@ type DaggerServer struct {
 
 	schema      *schema.APIServer
 	recorder    *progrock.Recorder
+	analytics   analytics.Tracker
 	progCleanup func() error
 
 	doneCh    chan struct{}
@@ -51,12 +52,19 @@ func NewDaggerServer(
 	secretStore *core.SecretStore,
 	authProvider *auth.RegistryAuthProvider,
 	rootLabels []pipeline.Label,
+	cloudToken string,
+	doNotTrack bool,
 ) (*DaggerServer, error) {
 	srv := &DaggerServer{
 		serverID: serverID,
 		bkClient: bkClient,
 		worker:   worker,
-		doneCh:   make(chan struct{}, 1),
+		analytics: analytics.New(analytics.Config{
+			DoNotTrack: doNotTrack || analytics.DoNotTrack(),
+			Labels:     rootLabels,
+			CloudToken: cloudToken,
+		}),
+		doneCh: make(chan struct{}, 1),
 	}
 
 	clientConn := caller.Conn()
@@ -84,33 +92,9 @@ func NewDaggerServer(
 	}
 	srv.recorder = progrock.NewRecorder(progWriter, progrock.WithLabels(progrockLabels...))
 
-	statusCh := make(chan *bkclient.SolveStatus, 8)
-	go func() {
-		// NOTE: context.Background is used because if the provided context is canceled, buildkit can
-		// leave internal progress contexts open and leak goroutines.
-		err := bkClient.WriteStatusesTo(context.Background(), statusCh)
-		if err != nil {
-			bklog.G(ctx).WithError(err).Error("failed to write status updates")
-		}
-	}()
-	go func() {
-		defer func() {
-			// drain channel on error
-			for range statusCh {
-			}
-		}()
-		for {
-			status, ok := <-statusCh
-			if !ok {
-				return
-			}
-			err := srv.recorder.Record(buildkit.BK2Progrock(status))
-			if err != nil {
-				bklog.G(ctx).WithError(err).Error("failed to record status update")
-				return
-			}
-		}
-	}()
+	// NOTE: context.Background is used because if the provided context is canceled, buildkit can
+	// leave internal progress contexts open and leak goroutines.
+	bkClient.WriteStatusesTo(context.Background(), srv.recorder)
 
 	apiSchema, err := schema.New(ctx, schema.InitializeArgs{
 		BuildkitClient: srv.bkClient,
@@ -143,8 +127,9 @@ func (srv *DaggerServer) Close() {
 	srv.recorder.Complete()
 	// close the recorder so the UI exits
 	srv.recorder.Close()
-
 	srv.progCleanup()
+	// close the analytics recorder
+	srv.analytics.Close()
 }
 
 func (srv *DaggerServer) Wait(ctx context.Context) error {
@@ -207,6 +192,7 @@ func (srv *DaggerServer) HTTPHandlerForClient(clientMetadata *engine.ClientMetad
 
 		req = req.WithContext(progrock.ToContext(req.Context(), srv.recorder))
 		req = req.WithContext(engine.ContextWithClientMetadata(req.Context(), clientMetadata))
+		req = req.WithContext(analytics.WithContext(req.Context(), srv.analytics))
 
 		srv.schema.ServeHTTP(w, req)
 	}), doneCh, nil

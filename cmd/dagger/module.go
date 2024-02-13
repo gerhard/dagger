@@ -12,10 +12,13 @@ import (
 	"strings"
 
 	"dagger.io/dagger"
+	"github.com/dagger/dagger/analytics"
 	"github.com/dagger/dagger/core/modules"
+	"github.com/dagger/dagger/dagql/idtui"
 	"github.com/dagger/dagger/engine/client"
 	"github.com/go-git/go-git/v5"
 	"github.com/iancoleman/strcase"
+	"github.com/juju/ansiterm/tabwriter"
 	"github.com/moby/buildkit/util/gitutil"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -23,169 +26,489 @@ import (
 )
 
 var (
+	moduleGroup = &cobra.Group{
+		ID:    "module",
+		Title: "Dagger Module Commands (Experimental)",
+	}
+
 	moduleURL   string
 	moduleFlags = pflag.NewFlagSet("module", pflag.ContinueOnError)
 
 	sdk       string
 	licenseID string
 
-	moduleName string
-	moduleRoot string
+	moduleName       string
+	moduleSourcePath string
+
+	installName string
+
+	developSDK        string
+	developSourcePath string
 
 	force bool
 )
 
 const (
 	moduleURLDefault = "."
+
+	defaultModuleSourceDirName = "dagger"
 )
 
 func init() {
-	moduleFlags.StringVarP(&moduleURL, "mod", "m", "", "Path to dagger.json config file for the module or a directory containing that file. Either local path (e.g. \"/path/to/some/dir\") or a github repo (e.g. \"github.com/dagger/dagger/path/to/some/subdir\").")
-	moduleFlags.BoolVar(&focus, "focus", true, "Only show output for focused commands.")
+	moduleFlags.StringVarP(&moduleURL, "mod", "m", "", "Path to dagger.json config file for the module or a directory containing that file. Either local path (e.g. \"/path/to/some/dir\") or a github repo (e.g. \"github.com/dagger/dagger/path/to/some/subdir\")")
+	moduleFlags.BoolVar(&focus, "focus", true, "Only show output for focused commands")
 
-	moduleCmd.PersistentFlags().AddFlagSet(moduleFlags)
 	listenCmd.PersistentFlags().AddFlagSet(moduleFlags)
 	queryCmd.PersistentFlags().AddFlagSet(moduleFlags)
 	funcCmds.AddFlagSet(moduleFlags)
 
-	moduleInitCmd.PersistentFlags().StringVar(&sdk, "sdk", "", "SDK name or image ref to use for the module")
-	moduleInitCmd.MarkPersistentFlagRequired("sdk")
-	moduleInitCmd.PersistentFlags().StringVar(&moduleName, "name", "", "Name of the new module")
-	moduleInitCmd.MarkPersistentFlagRequired("name")
-	moduleInitCmd.PersistentFlags().StringVar(&licenseID, "license", "", "License identifier to generate - see https://spdx.org/licenses/")
-	moduleInitCmd.PersistentFlags().StringVarP(&moduleRoot, "root", "", "", "Root directory that should be loaded for the full module context. Defaults to the parent directory containing dagger.json.")
+	moduleInitCmd.Flags().StringVar(&sdk, "sdk", "", "Optionally initialize module for development in the given SDK")
+	moduleInitCmd.Flags().StringVar(&moduleName, "name", "", "Name of the new module (defaults to parent directory name)")
+	moduleInitCmd.Flags().StringVar(&moduleSourcePath, "source", "", "Directory to store the module implementation source code in (defaults to \"dagger/ if \"--sdk\" is provided)")
+	moduleInitCmd.Flags().StringVar(&licenseID, "license", "", "License identifier to generate - see https://spdx.org/licenses/")
 
-	modulePublishCmd.PersistentFlags().BoolVarP(&force, "force", "f", false, "Force publish even if the git repository is not clean.")
+	modulePublishCmd.Flags().BoolVarP(&force, "force", "f", false, "Force publish even if the git repository is not clean")
+	modulePublishCmd.Flags().AddFlagSet(moduleFlags)
 
-	// also include codegen flags since codegen will run on module init
+	moduleInstallCmd.Flags().StringVarP(&installName, "name", "n", "", "Name to use for the dependency in the module. Defaults to the name of the module being installed.")
+	moduleInstallCmd.Flags().AddFlagSet(moduleFlags)
 
-	moduleCmd.AddCommand(moduleInitCmd)
-	moduleCmd.AddCommand(moduleInstallCmd)
-	moduleCmd.AddCommand(moduleSyncCmd)
-	moduleCmd.AddCommand(modulePublishCmd)
+	moduleDevelopCmd.Flags().StringVar(&developSDK, "sdk", "", "New SDK for the module")
+	moduleDevelopCmd.Flags().StringVar(&developSourcePath, "source", "", "Directory to store the module implementation source code in")
+	moduleDevelopCmd.PersistentFlags().AddFlagSet(moduleFlags)
+
+	configCmd.PersistentFlags().AddFlagSet(moduleFlags)
+	configCmd.AddCommand(oldInitCmd, oldInstallCmd, oldSyncCmd)
+	configCmd.AddGroup(moduleGroup)
 }
 
-var moduleCmd = &cobra.Command{
-	Use:     "module",
+var oldInitCmd = &cobra.Command{
+	Use:                "init",
+	Short:              "Initialize a new Dagger module",
+	Hidden:             true,
+	SilenceUsage:       true,
+	DisableFlagParsing: true,
+	Args: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf(`"dagger mod init" has been replaced by "dagger init"`)
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		// do nothing
+	},
+}
+
+var oldInstallCmd = &cobra.Command{
+	Use:                "install",
+	Short:              "Add a new dependency to a Dagger module",
+	Hidden:             true,
+	SilenceUsage:       true,
+	DisableFlagParsing: true,
+	GroupID:            moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
+	Args: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf(`"dagger mod install" has been replaced by "dagger install"`)
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		// do nothing
+	},
+}
+
+var oldSyncCmd = &cobra.Command{
+	Use:          "sync",
+	Short:        "Setup or update all the resources needed to develop on a module locally",
+	Hidden:       true,
+	SilenceUsage: true,
+	GroupID:      moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
+	DisableFlagParsing: true,
+	Args: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf(`"dagger mod sync" has been replaced by "dagger develop"`)
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		// do nothing
+	},
+}
+
+var configCmd = &cobra.Command{
+	Use:     "config",
 	Aliases: []string{"mod"},
-	Short:   "Manage dagger modules",
-	Long:    "Manage dagger modules. By default, print the configuration of the specified module in json format.",
-	Hidden:  true, // for now, remove once we're ready for primetime
+	Short:   "Get or set the configuration of a Dagger module",
+	Long:    "Get or set the configuration of a Dagger module. By default, print the configuration of the specified module.",
+	Example: strings.TrimSpace(`
+dagger config -m /path/to/some/dir
+dagger config -m github.com/dagger/hello-dagger
+`,
+	),
+	GroupID: moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
 		return withEngineAndTUI(ctx, client.Params{}, func(ctx context.Context, engineClient *client.Client) (err error) {
-			mod, _, err := getModuleRef(ctx, engineClient.Dagger())
+			cmd.SetContext(ctx)
+
+			vtx := progrock.FromContext(ctx).Vertex(idtui.PrimaryVertex, cmd.CommandPath())
+			defer func() { vtx.Done(err) }()
+			setCmdOutput(cmd, vtx)
+
+			modConf, err := getDefaultModuleConfiguration(ctx, engineClient.Dagger(), true)
 			if err != nil {
-				return fmt.Errorf("failed to get module: %w", err)
+				return fmt.Errorf("failed to load module: %w", err)
 			}
-			var cfg *modules.Config
-			switch {
-			case mod.Local:
-				cfg, err = mod.Config(ctx, nil)
-				if err != nil {
-					return fmt.Errorf("failed to get local module config: %w", err)
-				}
-			case mod.Git != nil:
-				rec := progrock.FromContext(ctx)
-				vtx := rec.Vertex("get-mod-config", strings.Join(os.Args, " "))
-				defer func() { vtx.Done(err) }()
-				readConfigTask := vtx.Task("reading git module config")
-				cfg, err = mod.Config(ctx, engineClient.Dagger())
-				readConfigTask.Done(err)
-				if err != nil {
-					return fmt.Errorf("failed to get git module config: %w", err)
-				}
+			if !modConf.FullyInitialized() {
+				return fmt.Errorf("module must be fully initialized")
 			}
-			cfgBytes, err := json.MarshalIndent(cfg, "", "  ")
+			mod := modConf.Source.AsModule()
+
+			name, err := mod.Name(ctx)
 			if err != nil {
-				return fmt.Errorf("failed to marshal module config: %w", err)
+				return fmt.Errorf("failed to get module name: %w", err)
 			}
-			cmd.Println(string(cfgBytes))
-			return nil
+			sdk, err := mod.SDK(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to get module SDK: %w", err)
+			}
+
+			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', tabwriter.DiscardEmptyColumns)
+			fmt.Fprintf(tw, "%s\t%s\n",
+				"Name:",
+				name,
+			)
+			fmt.Fprintf(tw, "%s\t%s\n",
+				"SDK:",
+				sdk,
+			)
+			fmt.Fprintf(tw, "%s\t%s\n",
+				"Root Directory:",
+				modConf.LocalContextPath,
+			)
+			fmt.Fprintf(tw, "%s\t%s\n",
+				"Source Directory:",
+				modConf.LocalRootSourcePath,
+			)
+
+			return tw.Flush()
 		})
 	},
 }
 
 var moduleInitCmd = &cobra.Command{
-	Use:    "init",
-	Short:  "Initialize a new dagger module in a local directory.",
-	Hidden: false,
-	RunE: func(cmd *cobra.Command, _ []string) (rerr error) {
+	Use:   "init [flags] [PATH]",
+	Short: "Initialize a new Dagger module",
+	Long: `Initialize a new Dagger module in a local directory.
+By default, create a new dagger.json configuration in the current working directory. If the positional argument PATH is provided, create the module in that directory instead.
+
+The configuration will default the name of the module to the parent directory name, unless specified with --name.
+
+Any module can be installed to via "dagger install".
+
+A module can only be called once it has been initialized with an SDK though. The "--sdk" flag can be provided to init here, but if it's not the configuration can be updated later via "dagger develop".
+
+The "--source" flag allows controlling the directory in which the actual module source code is stored. By default, it will be stored in a directory named "dagger". 
+`,
+	Example: "dagger init --name=hello --sdk=python --source=some/subdir",
+	GroupID: moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, extraArgs []string) (rerr error) {
 		ctx := cmd.Context()
 
 		return withEngineAndTUI(ctx, client.Params{}, func(ctx context.Context, engineClient *client.Client) (err error) {
 			dag := engineClient.Dagger()
-			ref, _, err := getModuleRef(ctx, dag)
+
+			vtx := progrock.FromContext(ctx).Vertex(idtui.PrimaryVertex, cmd.CommandPath())
+			defer func() { vtx.Done(err) }()
+			setCmdOutput(cmd, vtx)
+
+			// default the module source root to the current working directory if it doesn't exist yet
+			cwd, err := os.Getwd()
 			if err != nil {
-				return fmt.Errorf("failed to get module: %w", err)
+				return fmt.Errorf("failed to get current working directory: %w", err)
 			}
-			moduleDir, err := ref.LocalSourcePath()
+			srcRootPath := cwd
+			if len(extraArgs) > 0 {
+				srcRootPath = extraArgs[0]
+			}
+			if filepath.IsAbs(srcRootPath) {
+				srcRootPath, err = filepath.Rel(cwd, srcRootPath)
+				if err != nil {
+					return fmt.Errorf("failed to get relative path: %w", err)
+				}
+			}
+
+			modConf, err := getModuleConfigurationForSourceRef(ctx, dag, srcRootPath, false)
 			if err != nil {
-				return fmt.Errorf("module init is only supported for local modules")
+				return fmt.Errorf("failed to get configured module: %w", err)
 			}
-			if _, err := ref.Config(ctx, nil); err == nil {
-				return fmt.Errorf("module init config path already exists: %s", ref.Path)
+
+			if modConf.SourceKind != dagger.LocalSource {
+				return fmt.Errorf("module must be local")
 			}
-			if err := findOrCreateLicense(ctx, moduleDir); err != nil {
+			if modConf.ModuleSourceConfigExists {
+				return fmt.Errorf("module already exists")
+			}
+
+			// default module name to directory of source root
+			if moduleName == "" {
+				moduleName = filepath.Base(modConf.LocalRootSourcePath)
+			}
+
+			// only bother setting source path if there's an sdk at this time
+			if sdk != "" {
+				if moduleSourcePath == "" {
+					moduleSourcePath = filepath.Join(modConf.LocalRootSourcePath, defaultModuleSourceDirName)
+				}
+				// ensure source path is relative to the source root
+				sourceAbsPath, err := filepath.Abs(moduleSourcePath)
+				if err != nil {
+					return fmt.Errorf("failed to get absolute source path for %s: %w", moduleSourcePath, err)
+				}
+				moduleSourcePath, err = filepath.Rel(modConf.LocalRootSourcePath, sourceAbsPath)
+				if err != nil {
+					return fmt.Errorf("failed to get relative source path: %w", err)
+				}
+			}
+
+			_, err = modConf.Source.
+				WithName(moduleName).
+				WithSDK(sdk).
+				WithSourceSubpath(moduleSourcePath).
+				ResolveFromCaller().
+				AsModule().
+				GeneratedContextDiff().
+				Export(ctx, modConf.LocalContextPath)
+			if err != nil {
+				return fmt.Errorf("failed to generate code: %w", err)
+			}
+
+			if err := findOrCreateLicense(ctx, modConf.LocalRootSourcePath); err != nil {
 				return err
 			}
-			cfg := modules.NewConfig(moduleName, sdk, moduleRoot)
-			return updateModuleConfig(ctx, dag, moduleDir, ref, cfg, cmd)
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Initialized module", moduleName, "in", srcRootPath)
+
+			return nil
 		})
 	},
 }
 
 var moduleInstallCmd = &cobra.Command{
-	Use:     "install",
+	Use:     "install [flags] MODULE",
 	Aliases: []string{"use"},
-	Short:   "Add a new dependency to a dagger module",
-	Hidden:  false,
+	Short:   "Add a new dependency to a Dagger module",
+	Long:    "Add a Dagger module as a dependency of a local module.",
+	// TODO: use example from a reference module, using a tag instead of commit
+	Example: "dagger install github.com/shykes/daggerverse/ttlsh@16e40ec244966e55e36a13cb6e1ff8023e1e1473",
+	GroupID: moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, extraArgs []string) (rerr error) {
 		ctx := cmd.Context()
 		return withEngineAndTUI(ctx, client.Params{}, func(ctx context.Context, engineClient *client.Client) (err error) {
 			dag := engineClient.Dagger()
-			ref, _, err := getModuleRef(ctx, dag)
+			modConf, err := getDefaultModuleConfiguration(ctx, dag, false)
 			if err != nil {
-				return fmt.Errorf("failed to get module: %w", err)
+				return fmt.Errorf("failed to get configured module: %w", err)
 			}
-			moduleDir, err := ref.LocalSourcePath()
+			if modConf.SourceKind != dagger.LocalSource {
+				return fmt.Errorf("module must be local")
+			}
+			if !modConf.FullyInitialized() {
+				return fmt.Errorf("module must be fully initialized")
+			}
+
+			depRefStr := extraArgs[0]
+			depSrc := dag.ModuleSource(depRefStr)
+			depSrcKind, err := depSrc.Kind(ctx)
 			if err != nil {
-				return fmt.Errorf("module use is only supported for local modules")
+				return fmt.Errorf("failed to get module ref kind: %w", err)
 			}
-			modCfg, err := ref.Config(ctx, dag)
+			if depSrcKind == dagger.LocalSource {
+				// need to ensure that local dep paths are relative to the parent root source
+				depAbsPath, err := filepath.Abs(depRefStr)
+				if err != nil {
+					return fmt.Errorf("failed to get dep absolute path for %s: %w", depRefStr, err)
+				}
+				depRelPath, err := filepath.Rel(modConf.LocalRootSourcePath, depAbsPath)
+				if err != nil {
+					return fmt.Errorf("failed to get dep relative path: %w", err)
+				}
+
+				depSrc = dag.ModuleSource(depRelPath)
+			}
+			dep := dag.ModuleDependency(depSrc, dagger.ModuleDependencyOpts{
+				Name: installName,
+			})
+
+			modSrc := modConf.Source.
+				WithDependencies([]*dagger.ModuleDependency{dep}).
+				ResolveFromCaller()
+
+			_, err = modSrc.
+				AsModule().
+				GeneratedContextDiff().
+				Export(ctx, modConf.LocalContextPath)
 			if err != nil {
-				return fmt.Errorf("failed to get module config: %w", err)
+				return fmt.Errorf("failed to generate code: %w", err)
 			}
-			if err := modCfg.Use(ctx, dag, ref, extraArgs...); err != nil {
-				return fmt.Errorf("failed to add module dependency: %w", err)
+
+			depSrc = modSrc.ResolveDependency(depSrc)
+
+			name, err := depSrc.ModuleName(ctx)
+			if err != nil {
+				return err
 			}
-			return updateModuleConfig(ctx, dag, moduleDir, ref, modCfg, cmd)
+			sdk, err := depSrc.AsModule().SDK(ctx)
+			if err != nil {
+				return err
+			}
+			depRootSubpath, err := depSrc.SourceRootSubpath(ctx)
+			if err != nil {
+				return err
+			}
+
+			if depSrcKind == dagger.GitSource {
+				git := depSrc.AsGitSource()
+				gitURL, err := git.CloneURL(ctx)
+				if err != nil {
+					return err
+				}
+				gitVersion, err := git.Version(ctx)
+				if err != nil {
+					return err
+				}
+				gitCommit, err := git.Commit(ctx)
+				if err != nil {
+					return err
+				}
+
+				analytics.Ctx(ctx).Capture(ctx, "module_install", map[string]string{
+					"module_name":   name,
+					"install_name":  installName,
+					"module_sdk":    sdk,
+					"source_kind":   "git",
+					"git_symbolic":  filepath.Join(gitURL, depRootSubpath),
+					"git_clone_url": gitURL,
+					"git_subpath":   depRootSubpath,
+					"git_version":   gitVersion,
+					"git_commit":    gitCommit,
+				})
+			} else if depSrcKind == dagger.LocalSource {
+				analytics.Ctx(ctx).Capture(ctx, "module_install", map[string]string{
+					"module_name":   name,
+					"install_name":  installName,
+					"module_sdk":    sdk,
+					"source_kind":   "local",
+					"local_subpath": depRootSubpath,
+				})
+
+			}
+
+			return nil
 		})
 	},
 }
 
-var moduleSyncCmd = &cobra.Command{
-	Use:    "sync",
-	Short:  "Synchronize a dagger module with the latest version of its extensions",
-	Hidden: false,
+var moduleDevelopCmd = &cobra.Command{
+	Use:   "develop",
+	Short: "Setup or update all the resources needed to develop on a module locally",
+	Long: `Setup or update all the resources needed to develop on a module locally.
+
+This command re-regerates the module's generated code based on dependencies
+and the current state of the module's source code.
+
+If --sdk is set, the config file and generated code will be updated with those values reflected. It currently can only be used to set the SDK of a module that does not have one already.
+
+--source allows controlling the directory in which the actual module source code is stored. By default, it will be stored in a directory named "dagger".
+
+:::note
+If not updating source or SDK, this is only required for IDE auto-completion/LSP purposes.
+:::
+`,
+	GroupID: moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
 	RunE: func(cmd *cobra.Command, extraArgs []string) (rerr error) {
 		ctx := cmd.Context()
 		return withEngineAndTUI(ctx, client.Params{}, func(ctx context.Context, engineClient *client.Client) (err error) {
 			dag := engineClient.Dagger()
-			ref, _, err := getModuleRef(ctx, dag)
+			modConf, err := getDefaultModuleConfiguration(ctx, dag, false)
 			if err != nil {
-				return fmt.Errorf("failed to get module: %w", err)
+				return fmt.Errorf("failed to get configured module: %w", err)
 			}
-			moduleDir, err := ref.LocalSourcePath()
+			if modConf.SourceKind != dagger.LocalSource {
+				return fmt.Errorf("module must be local")
+			}
+
+			src := modConf.Source
+			// use this one to read sdk/source path since they require the host filesystem be loaded.
+			// this is kind of inefficient, could update the engine to support these APIs without a full
+			// ResolveFromCaller call first
+			modConf.Source = modConf.Source.ResolveFromCaller()
+
+			modSDK, err := modConf.Source.AsModule().SDK(ctx)
 			if err != nil {
-				return fmt.Errorf("module sync is only supported for local modules")
+				return fmt.Errorf("failed to get module SDK: %w", err)
 			}
-			modCfg, err := ref.Config(ctx, dag)
+			if developSDK != "" {
+				if modSDK != "" && modSDK != developSDK {
+					return fmt.Errorf("cannot update module SDK that has already been set to %q", modSDK)
+				}
+				modSDK = developSDK
+				src = src.WithSDK(modSDK)
+			}
+
+			modSourcePath, err := modConf.Source.SourceSubpath(ctx)
 			if err != nil {
-				return fmt.Errorf("failed to get module config: %w", err)
+				return fmt.Errorf("failed to get module source subpath: %w", err)
 			}
-			return updateModuleConfig(ctx, dag, moduleDir, ref, modCfg, cmd)
+			// if SDK is set but source path isn't and the user didn't provide --source, we'll use the default source path
+			if modSDK != "" && modSourcePath == "" && developSourcePath == "" {
+				developSourcePath = filepath.Join(modConf.LocalRootSourcePath, defaultModuleSourceDirName)
+			}
+			// if there's no SDK and the user isn't changing the source path, there's nothing to do.
+			// error out rather than silently doing nothing.
+			if modSDK == "" && developSourcePath == "" {
+				return fmt.Errorf("dagger develop on a module without an SDK requires either --sdk or --source")
+			}
+			if developSourcePath != "" {
+				// ensure source path is relative to the source root
+				sourceAbsPath, err := filepath.Abs(developSourcePath)
+				if err != nil {
+					return fmt.Errorf("failed to get absolute source path for %s: %w", developSourcePath, err)
+				}
+				developSourcePath, err = filepath.Rel(modConf.LocalRootSourcePath, sourceAbsPath)
+				if err != nil {
+					return fmt.Errorf("failed to get relative source path: %w", err)
+				}
+
+				if modSourcePath != "" && modSourcePath != developSourcePath {
+					return fmt.Errorf("cannot update module source path that has already been set to %q", modSourcePath)
+				}
+
+				modSourcePath = developSourcePath
+				src = src.WithSourceSubpath(modSourcePath)
+			}
+
+			_, err = src.ResolveFromCaller().
+				AsModule().
+				GeneratedContextDiff().
+				Export(ctx, modConf.LocalContextPath)
+			if err != nil {
+				return fmt.Errorf("failed to generate code: %w", err)
+			}
+
+			return nil
 		})
 	},
 }
@@ -194,28 +517,41 @@ const daDaggerverse = "https://daggerverse.dev"
 
 var modulePublishCmd = &cobra.Command{
 	Use:    "publish",
-	Short:  fmt.Sprintf("Publish your module to The Daggerverse (%s)", daDaggerverse),
-	Hidden: false,
+	Hidden: true, // Hide while we finalize publishing workflow
+	Short:  "Publish a Dagger module to the Daggerverse",
+	Long: fmt.Sprintf(`Publish a local module to the Daggerverse (%s).
+
+The module needs to be committed to a git repository and have a remote
+configured with name "origin". The git repository must be clean (unless
+forced), to avoid mistakingly depending on uncommitted files.
+`,
+		daDaggerverse,
+	),
+	GroupID: moduleGroup.ID,
+	Annotations: map[string]string{
+		"experimental": "true",
+	},
 	RunE: func(cmd *cobra.Command, extraArgs []string) (rerr error) {
 		ctx := cmd.Context()
 		return withEngineAndTUI(ctx, client.Params{}, func(ctx context.Context, engineClient *client.Client) (err error) {
 			rec := progrock.FromContext(ctx)
 
-			vtx := rec.Vertex("publish", strings.Join(os.Args, " "), progrock.Focused())
+			vtx := rec.Vertex(idtui.PrimaryVertex, cmd.CommandPath())
 			defer func() { vtx.Done(err) }()
-			cmd.SetOut(vtx.Stdout())
-			cmd.SetErr(vtx.Stderr())
+			setCmdOutput(cmd, vtx)
 
 			dag := engineClient.Dagger()
-			ref, _, err := getModuleRef(ctx, dag)
+			modConf, err := getDefaultModuleConfiguration(ctx, dag, true)
 			if err != nil {
-				return fmt.Errorf("failed to get module: %w", err)
+				return fmt.Errorf("failed to get configured module: %w", err)
 			}
-			moduleDir, err := ref.LocalSourcePath()
-			if err != nil {
-				return fmt.Errorf("module publish is only supported for local modules")
+			if modConf.SourceKind != dagger.LocalSource {
+				return fmt.Errorf("module must be local")
 			}
-			repo, err := git.PlainOpenWithOptions(moduleDir, &git.PlainOpenOptions{
+			if !modConf.FullyInitialized() {
+				return fmt.Errorf("module must be fully initialized")
+			}
+			repo, err := git.PlainOpenWithOptions(modConf.LocalRootSourcePath, &git.PlainOpenOptions{
 				DetectDotGit: true,
 			})
 			if err != nil {
@@ -248,11 +584,7 @@ var modulePublishCmd = &cobra.Command{
 
 			// calculate path relative to repo root
 			gitRoot := wt.Filesystem.Root()
-			absModDir, err := filepath.Abs(moduleDir)
-			if err != nil {
-				return fmt.Errorf("failed to get absolute module dir: %w", err)
-			}
-			pathFromRoot, err := filepath.Rel(gitRoot, absModDir)
+			pathFromRoot, err := filepath.Rel(gitRoot, modConf.LocalRootSourcePath)
 			if err != nil {
 				return fmt.Errorf("failed to get path from git root: %w", err)
 			}
@@ -280,7 +612,7 @@ var modulePublishCmd = &cobra.Command{
 
 			data := url.Values{}
 			data.Add("ref", refStr)
-			req, err := http.NewRequest(http.MethodPut, crawlURL, strings.NewReader(data.Encode())) // nolint: gosec
+			req, err := http.NewRequest(http.MethodPut, crawlURL, strings.NewReader(data.Encode()))
 			if err != nil {
 				return fmt.Errorf("failed to create request: %w", err)
 			}
@@ -321,119 +653,166 @@ func originToPath(origin string) (string, error) {
 	return strings.TrimSuffix(path.Join(url.Host, url.Path), ".git"), nil
 }
 
-func updateModuleConfig(
-	ctx context.Context,
-	dag *dagger.Client,
-	moduleDir string,
-	modFlag *modules.Ref,
-	modCfg *modules.Config,
-	cmd *cobra.Command,
-) (rerr error) {
-	rec := progrock.FromContext(ctx)
+type configuredModule struct {
+	Source     *dagger.ModuleSource
+	SourceKind dagger.ModuleSourceKind
 
-	configPath := filepath.Join(moduleDir, modules.Filename)
+	LocalContextPath    string
+	LocalRootSourcePath string
 
-	cfgBytes, err := json.MarshalIndent(modCfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal module config: %w", err)
-	}
-	_, parentDirStatErr := os.Stat(moduleDir)
-	switch {
-	case parentDirStatErr == nil:
-		// already exists, nothing to do
-	case os.IsNotExist(parentDirStatErr):
-		// make the parent dir, but if something goes wrong, clean it up in the defer
-		if err := os.MkdirAll(moduleDir, 0o755); err != nil {
-			return fmt.Errorf("failed to create module config directory: %w", err)
-		}
-		defer func() {
-			if rerr != nil {
-				os.RemoveAll(moduleDir)
-			}
-		}()
-	default:
-		return fmt.Errorf("failed to stat parent directory: %w", parentDirStatErr)
-	}
-
-	var cfgFileMode os.FileMode = 0o644
-	originalContents, configFileReadErr := os.ReadFile(configPath)
-	switch {
-	case configFileReadErr == nil:
-		// attempt to restore the original file if it already existed and something goes wrong
-		stat, err := os.Stat(configPath)
-		if err != nil {
-			return fmt.Errorf("failed to stat module config: %w", err)
-		}
-		cfgFileMode = stat.Mode()
-		defer func() {
-			if rerr != nil {
-				os.WriteFile(configPath, originalContents, cfgFileMode)
-			}
-		}()
-	case os.IsNotExist(configFileReadErr):
-		// remove it if it didn't exist already and something goes wrong
-		defer func() {
-			if rerr != nil {
-				os.Remove(configPath)
-			}
-		}()
-	default:
-		return fmt.Errorf("failed to read module config: %w", configFileReadErr)
-	}
-
-	// nolint:gosec
-	if err := os.WriteFile(configPath, append(cfgBytes, '\n'), cfgFileMode); err != nil {
-		return fmt.Errorf("failed to write module config: %w", err)
-	}
-
-	mod, err := modFlag.AsUninitializedModule(ctx, dag)
-	if err != nil {
-		return fmt.Errorf("failed to load module: %w", err)
-	}
-
-	codegen := mod.GeneratedCode()
-
-	if err := automateVCS(ctx, moduleDir, codegen); err != nil {
-		return fmt.Errorf("failed to automate vcs: %w", err)
-	}
-
-	entries, err := codegen.Code().Entries(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get codegen output entries: %w", err)
-	}
-
-	rec.Debug("syncing generated files", progrock.Labelf("entries", "%v", entries))
-
-	if _, err := codegen.Code().Export(ctx, moduleDir); err != nil {
-		return fmt.Errorf("failed to export codegen output: %w", err)
-	}
-
-	return nil
+	// whether the dagger.json in the module source dir exists yet
+	ModuleSourceConfigExists bool
 }
 
-func getModuleRef(ctx context.Context, dag *dagger.Client) (*modules.Ref, bool, error) {
-	wasSet := false
+func (c *configuredModule) FullyInitialized() bool {
+	return c.ModuleSourceConfigExists
+}
 
-	moduleURL := moduleURL
-	if moduleURL == "" {
+func getDefaultModuleConfiguration(
+	ctx context.Context,
+	dag *dagger.Client,
+	// if true, will resolve local sources from the caller
+	// before returning the source. This should be set false
+	// if the caller wants to mutate configuration (sdk/dependency/etc.)
+	// since those changes require the source be resolved after
+	// they are made (due to the fact that they may result in more
+	// files needing to be loaded).
+	resolveFromCaller bool,
+) (*configuredModule, error) {
+	srcRefStr := moduleURL
+	if srcRefStr == "" {
 		// it's unset or default value, use mod if present
 		if v, ok := os.LookupEnv("DAGGER_MODULE"); ok {
-			moduleURL = v
-			wasSet = true
+			srcRefStr = v
 		}
 
 		// it's still unset, set to the default
-		if moduleURL == "" {
-			moduleURL = moduleURLDefault
+		if srcRefStr == "" {
+			srcRefStr = moduleURLDefault
 		}
-	} else {
-		wasSet = true
 	}
-	cfg, err := modules.ResolveMovingRef(ctx, dag, moduleURL)
-	return cfg, wasSet, err
+
+	return getModuleConfigurationForSourceRef(ctx, dag, srcRefStr, resolveFromCaller)
 }
 
-func loadModCmdWrapper(
+func getModuleConfigurationForSourceRef(
+	ctx context.Context,
+	dag *dagger.Client,
+	srcRefStr string,
+	resolveFromCaller bool,
+) (*configuredModule, error) {
+	conf := &configuredModule{}
+
+	conf.Source = dag.ModuleSource(srcRefStr)
+	var err error
+	conf.SourceKind, err = conf.Source.Kind(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get module ref kind: %w", err)
+	}
+
+	if conf.SourceKind == dagger.LocalSource {
+		// first check if this is a named module from the default find-up dagger.json
+		// TODO: can move this to engine now?
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current working directory: %w", err)
+		}
+		defaultConfigDir, foundDefaultConfig, err := findUp(cwd)
+		if err != nil {
+			return nil, fmt.Errorf("error trying to find config path for %s: %s", cwd, err)
+		}
+		if foundDefaultConfig {
+			configPath := filepath.Join(defaultConfigDir, modules.Filename)
+			contents, err := os.ReadFile(configPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read %s: %w", configPath, err)
+			}
+			var modCfg modules.ModuleConfig
+			if err := json.Unmarshal(contents, &modCfg); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal %s: %s", configPath, err)
+			}
+			if namedDep, ok := modCfg.DependencyByName(srcRefStr); ok {
+				depPath := filepath.Join(defaultConfigDir, namedDep.Source)
+				srcRefStr = depPath
+			}
+		}
+
+		conf.LocalRootSourcePath, err = filepath.Abs(srcRefStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get absolute path for %s: %w", srcRefStr, err)
+		}
+
+		if filepath.IsAbs(srcRefStr) {
+			srcRefStr, err = filepath.Rel(cwd, srcRefStr)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get relative path for %s: %w", srcRefStr, err)
+			}
+		}
+		if err := os.MkdirAll(srcRefStr, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create directory for %s: %w", srcRefStr, err)
+		}
+		conf.Source = dag.ModuleSource(srcRefStr)
+
+		conf.LocalContextPath, err = conf.Source.ResolveContextPathFromCaller(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get local root path: %w", err)
+		}
+		_, err = os.Lstat(filepath.Join(conf.LocalRootSourcePath, modules.Filename))
+		conf.ModuleSourceConfigExists = err == nil
+
+		if resolveFromCaller {
+			conf.Source = conf.Source.ResolveFromCaller()
+		}
+	} else {
+		conf.ModuleSourceConfigExists, err = conf.Source.ConfigExists(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if module config exists: %w", err)
+		}
+	}
+
+	return conf, nil
+}
+
+func findUp(curDirPath string) (string, bool, error) {
+	if !filepath.IsAbs(curDirPath) {
+		return "", false, fmt.Errorf("path is not absolute: %s", curDirPath)
+	}
+
+	configPath := filepath.Join(curDirPath, modules.Filename)
+	stat, err := os.Lstat(configPath)
+	switch {
+	case os.IsNotExist(err):
+
+	case err == nil:
+		// make sure it's a file
+		if !stat.Mode().IsRegular() {
+			return "", false, fmt.Errorf("expected %s to be a file", configPath)
+		}
+		return curDirPath, true, nil
+
+	default:
+		return "", false, fmt.Errorf("failed to lstat %s: %s", configPath, err)
+	}
+
+	// didn't exist, try parent unless we've hit "/" or a git repo checkout root
+	if curDirPath == "/" {
+		return curDirPath, false, nil
+	}
+
+	_, err = os.Lstat(filepath.Join(curDirPath, ".git"))
+	if err == nil {
+		return curDirPath, false, nil
+	}
+
+	parentDirPath := filepath.Dir(curDirPath)
+	return findUp(parentDirPath)
+}
+
+// Wraps a command with optional module loading. If a module was explicitly specified by the user,
+// it will try to load it and error out if it's not found or invalid. If no module was specified,
+// it will try the current directory as a module but provide a nil module if it's not found, not
+// erroring out.
+func optionalModCmdWrapper(
 	fn func(context.Context, *client.Client, *dagger.Module, *cobra.Command, []string) error,
 	presetSecretToken string,
 ) func(*cobra.Command, []string) error {
@@ -441,57 +820,26 @@ func loadModCmdWrapper(
 		return withEngineAndTUI(cmd.Context(), client.Params{
 			SecretToken: presetSecretToken,
 		}, func(ctx context.Context, engineClient *client.Client) (err error) {
-			rec := progrock.FromContext(ctx)
-			vtx := rec.Vertex("cmd-loader", strings.Join(os.Args, " "))
-			defer func() { vtx.Done(err) }()
-
-			load := vtx.Task("loading module")
-			loadedMod, err := loadMod(ctx, engineClient.Dagger())
-			load.Done(err)
+			modConf, err := getDefaultModuleConfiguration(ctx, engineClient.Dagger(), true)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to get configured module: %w", err)
 			}
-
+			var loadedMod *dagger.Module
+			if modConf.FullyInitialized() {
+				loadedMod = modConf.Source.AsModule().Initialize()
+				_, err := loadedMod.Serve(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to serve module: %w", err)
+				}
+			}
 			return fn(ctx, engineClient, loadedMod, cmd, cmdArgs)
 		})
 	}
 }
 
-func loadMod(ctx context.Context, c *dagger.Client) (*dagger.Module, error) {
-	mod, modRequired, err := getModuleRef(ctx, c)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get module config: %w", err)
-	}
-
-	// check that the module exists first
-	if _, err := mod.Config(ctx, c); err != nil {
-		if !modRequired {
-			// only allow failing to load the mod when it was explicitly requested
-			// by the user
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to load module config: %w", err)
-	}
-
-	loadedMod, err := mod.AsModule(ctx, c)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load module: %w", err)
-	}
-
-	_, err = loadedMod.Serve(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get loaded module ID: %w", err)
-	}
-
-	return loadedMod, nil
-}
-
 // loadModTypeDefs loads the objects defined by the given module in an easier to use data structure.
 func loadModTypeDefs(ctx context.Context, dag *dagger.Client, mod *dagger.Module) (*moduleDef, error) {
 	var res struct {
-		Mod struct {
-			Name string
-		}
 		TypeDefs []*modTypeDef
 	}
 
@@ -549,9 +897,6 @@ fragment FieldParts on FieldTypeDef {
 }
 
 query TypeDefs($module: ModuleID!) {
-	mod: loadModuleFromID(id: $module) {
-		name
-	}
 	typeDefs: currentTypeDefs {
 		kind
 		optional
@@ -597,7 +942,12 @@ query TypeDefs($module: ModuleID!) {
 		return nil, fmt.Errorf("query module objects: %w", err)
 	}
 
-	modDef := &moduleDef{Name: res.Mod.Name}
+	name, err := mod.Name(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get module name: %w", err)
+	}
+
+	modDef := &moduleDef{Name: name}
 	for _, typeDef := range res.TypeDefs {
 		switch typeDef.Kind {
 		case dagger.ObjectKind:

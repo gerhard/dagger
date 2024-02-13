@@ -10,7 +10,9 @@ import {
   FunctionTypedef,
 } from "./typeDefs.js"
 import {
+  getAlias,
   isFunction,
+  isMainObject,
   isObject,
   isOptional,
   isPublicProperty,
@@ -18,6 +20,9 @@ import {
 } from "./utils.js"
 
 export type ScanResult = {
+  module: {
+    description?: string
+  }
   classes: { [name: string]: ClassTypeDef }
   functions: { [name: string]: FunctionTypedef }
 }
@@ -31,8 +36,9 @@ export type ScanResult = {
  * WARNING(28/11/23): This does NOT include arrow style function.
  *
  * @param files List of TypeScript files to introspect.
+ * @param moduleName The name of the module to introspect.
  */
-export function scan(files: string[]): ScanResult {
+export function scan(files: string[], moduleName = ""): ScanResult {
   if (files.length === 0) {
     throw new UnknownDaggerError("no files to introspect found", {})
   }
@@ -42,6 +48,7 @@ export function scan(files: string[]): ScanResult {
   const checker = program.getTypeChecker()
 
   const metadata: ScanResult = {
+    module: {},
     classes: {},
     functions: {},
   }
@@ -56,6 +63,10 @@ export function scan(files: string[]): ScanResult {
       // Handle class
       if (ts.isClassDeclaration(node) && isObject(node)) {
         const classTypeDef = introspectClass(checker, node)
+
+        if (isMainObject(classTypeDef.name, moduleName)) {
+          metadata.module.description = introspectTopLevelComment(file)
+        }
 
         metadata.classes[classTypeDef.name] = classTypeDef
       }
@@ -117,14 +128,14 @@ function introspectClass(
     if (ts.isMethodDeclaration(member) && isFunction(member)) {
       const fctTypeDef = introspectMethod(checker, member)
 
-      metadata.methods[fctTypeDef.name] = fctTypeDef
+      metadata.methods[fctTypeDef.alias ?? fctTypeDef.name] = fctTypeDef
     }
 
     // Handle public properties from the class.
     if (ts.isPropertyDeclaration(member)) {
       const fieldTypeDef = introspectProperty(checker, member)
 
-      metadata.fields[fieldTypeDef.name] = fieldTypeDef
+      metadata.fields[fieldTypeDef.alias ?? fieldTypeDef.name] = fieldTypeDef
     }
   })
 
@@ -159,6 +170,7 @@ function introspectProperty(
   return {
     name,
     description,
+    alias: getAlias(property, "field"),
     typeDef: typeNameToTypedef(typeName),
     isExposed: isPublicProperty(property),
   }
@@ -193,6 +205,7 @@ function introspectConstructor(
         typeDef: typeNameToTypedef(typeName),
         optional,
         defaultValue,
+        isVariadic: false,
       }
 
       return acc
@@ -216,7 +229,7 @@ function introspectConstructor(
  */
 function introspectMethod(
   checker: ts.TypeChecker,
-  method: ts.MethodDeclaration | ts.ArrowFunction
+  method: ts.MethodDeclaration
 ): FunctionTypedef {
   const methodSymbol = checker.getSymbolAtLocation(method.name)
   if (!methodSymbol) {
@@ -234,10 +247,11 @@ function introspectMethod(
   return {
     name: methodMetadata.name,
     description: methodMetadata.description,
+    alias: getAlias(method, "func"),
     args: methodSignature.params.reduce(
       (
         acc: { [name: string]: FunctionArg },
-        { name, typeName, description, optional, defaultValue }
+        { name, typeName, description, optional, defaultValue, isVariadic }
       ) => {
         acc[name] = {
           name,
@@ -245,6 +259,7 @@ function introspectMethod(
           description,
           optional,
           defaultValue,
+          isVariadic,
         }
 
         return acc
@@ -253,4 +268,35 @@ function introspectMethod(
     ),
     returnType: typeNameToTypedef(methodSignature.returnType),
   }
+}
+
+/**
+ * Return the content of the top level comment of the given file.
+ *
+ * @param file The file to introspect.
+ */
+function introspectTopLevelComment(file: ts.SourceFile): string | undefined {
+  const firstStatement = file.statements[0]
+  if (!firstStatement) {
+    return undefined
+  }
+
+  const commentRanges = ts.getLeadingCommentRanges(
+    file.getFullText(),
+    firstStatement.pos
+  )
+  if (!commentRanges || commentRanges.length === 0) {
+    return undefined
+  }
+
+  const commentRange = commentRanges[0]
+  const comment = file
+    .getFullText()
+    .substring(commentRange.pos, commentRange.end)
+    .split("\n")
+    .slice(1, -1) // Remove start and ending comments characters `/** */`
+    .map((line) => line.replace("*", "").trim()) // Remove leading * and spaces
+    .join("\n")
+
+  return comment
 }

@@ -112,7 +112,6 @@ func (iface *InterfaceType) TypeDef() *TypeDef {
 	}
 }
 
-// nolint:gocyclo
 func (iface *InterfaceType) Install(ctx context.Context, dag *dagql.Server) error {
 	ctx = bklog.WithLogger(ctx, bklog.G(ctx).WithField("interface", iface.typeDef.Name))
 	bklog.G(ctx).Debug("installing interface")
@@ -161,7 +160,7 @@ func (iface *InterfaceType) Install(ctx context.Context, dag *dagql.Server) erro
 			Name:        fnName,
 			Description: formatGqlDescription(fnTypeDef.Description),
 			Type:        fnTypeDef.ReturnType.ToTyped(),
-			Module:      iface.mod.InstanceID,
+			Module:      iface.mod.IDModule(),
 		}
 
 		argTypeDefsByName := map[string]*TypeDef{}
@@ -277,7 +276,7 @@ func (iface *InterfaceType) Install(ctx context.Context, dag *dagql.Server) erro
 					Type: idScalar,
 				},
 			},
-			Module: iface.mod.InstanceID,
+			Module: iface.mod.IDModule(),
 		},
 		func(ctx context.Context, self dagql.Object, args map[string]dagql.Input) (dagql.Typed, error) {
 			return iface.ConvertFromSDKResult(ctx, args["id"])

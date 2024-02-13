@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dagger/dagger/analytics"
 	"github.com/dagger/dagger/core/pipeline"
 	"github.com/dagger/dagger/dagql"
 	"github.com/dagger/dagger/dagql/idproto"
@@ -15,12 +16,12 @@ import (
 	"github.com/moby/buildkit/util/bklog"
 	"github.com/opencontainers/go-digest"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/vito/progrock"
 )
 
 type ModuleFunction struct {
 	root    *Query
 	mod     *Module
-	modID   *idproto.ID
 	objDef  *ObjectTypeDef // may be nil for special functions like the module definition function call
 	runtime *Container
 
@@ -69,7 +70,6 @@ func newModFunction(
 	return &ModuleFunction{
 		root:       root,
 		mod:        mod,
-		modID:      modID,
 		objDef:     objDef,
 		runtime:    runtime,
 		metadata:   metadata,
@@ -91,6 +91,26 @@ type CallInput struct {
 	Value dagql.Typed
 }
 
+func (fn *ModuleFunction) recordCall(ctx context.Context) {
+	mod := fn.mod
+	if fn.metadata.Name == "" {
+		return
+	}
+	props := map[string]string{
+		"target_function": fn.metadata.Name,
+	}
+	moduleAnalyticsProps(mod, "target_", props)
+	if caller, err := mod.Query.CurrentModule(ctx); err == nil {
+		props["caller_type"] = "module"
+		moduleAnalyticsProps(caller, "caller_", props)
+	} else if analytics.IsInternal(ctx) {
+		props["caller_type"] = "internal"
+	} else {
+		props["caller_type"] = "direct"
+	}
+	analytics.Ctx(ctx).Capture(ctx, "module_call", props)
+}
+
 func (fn *ModuleFunction) Call(ctx context.Context, caller *idproto.ID, opts *CallOpts) (t dagql.Typed, rerr error) {
 	mod := fn.mod
 
@@ -99,6 +119,10 @@ func (fn *ModuleFunction) Call(ctx context.Context, caller *idproto.ID, opts *Ca
 		lg = lg.WithField("object", fn.objDef.Name)
 	}
 	ctx = bklog.WithLogger(ctx, lg)
+
+	// Capture analytics for the function call.
+	// Calls without function name are internal and excluded.
+	fn.recordCall(ctx)
 
 	callInputs := make([]*FunctionCallArgValue, len(opts.Inputs))
 	hasArg := map[string]bool{}
@@ -212,7 +236,8 @@ func (fn *ModuleFunction) Call(ctx context.Context, caller *idproto.ID, opts *Ca
 		deps = mod.Deps.Prepend(mod)
 	}
 
-	err = mod.Query.RegisterFunctionCall(callerDigest, deps, fn.modID, callMeta)
+	err = mod.Query.RegisterFunctionCall(callerDigest, deps, fn.mod, callMeta,
+		progrock.FromContext(ctx).Parent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register function call: %w", err)
 	}
@@ -280,6 +305,26 @@ func (fn *ModuleFunction) ArgType(argName string) (ModType, error) {
 		return nil, fmt.Errorf("failed to find arg %q", argName)
 	}
 	return arg.modType, nil
+}
+
+func moduleAnalyticsProps(mod *Module, prefix string, props map[string]string) {
+	props[prefix+"module_name"] = mod.Name()
+
+	source := mod.Source.Self
+	switch source.Kind {
+	case ModuleSourceKindLocal:
+		local := source.AsLocalSource.Value
+		props[prefix+"source_kind"] = "local"
+		props[prefix+"local_subpath"] = local.RootSubpath
+	case ModuleSourceKindGit:
+		git := source.AsGitSource.Value
+		props[prefix+"source_kind"] = "git"
+		props[prefix+"git_symbolic"] = git.Symbolic()
+		props[prefix+"git_clone_url"] = git.CloneURL()
+		props[prefix+"git_subpath"] = git.RootSubpath
+		props[prefix+"git_version"] = git.Version
+		props[prefix+"git_commit"] = git.Commit
+	}
 }
 
 // If the result of a Function call contains IDs of resources, we need to

@@ -40,6 +40,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
+	"github.com/dagger/dagger/analytics"
 	"github.com/dagger/dagger/core/pipeline"
 	"github.com/dagger/dagger/engine"
 	"github.com/dagger/dagger/engine/session"
@@ -66,6 +67,7 @@ type Params struct {
 
 	JournalFile        string
 	ProgrockWriter     progrock.Writer
+	ProgrockParent     string
 	EngineNameCallback func(string)
 	CloudURLCallback   func(string)
 
@@ -143,8 +145,18 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 		cloudURL = tel.URL()
 		progMultiW = append(progMultiW, telemetry.NewWriter(tel))
 	}
-	c.Recorder = progrock.NewRecorder(progMultiW)
+	if c.ProgrockParent != "" {
+		c.Recorder = progrock.NewSubRecorder(progMultiW, c.ProgrockParent)
+	} else {
+		c.Recorder = progrock.NewRecorder(progMultiW)
+	}
 	ctx = progrock.ToContext(ctx, c.Recorder)
+
+	defer func() {
+		if rerr != nil {
+			c.Recorder.Close()
+		}
+	}()
 
 	nestedSessionPortVal, isNestedSession := os.LookupEnv("DAGGER_SESSION_PORT")
 	if isNestedSession {
@@ -166,9 +178,15 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 		return c, ctx, nil
 	}
 
-	initGroup := progrock.FromContext(ctx).WithGroup("init", progrock.Weak())
+	// sneakily using ModuleCallerDigest here because it seems nicer than just
+	// making something up, and should be pretty much 1:1 I think (even
+	// non-cached things will have a different caller digest each time)
+	connectDigest := params.ModuleCallerDigest
+	if connectDigest == "" {
+		connectDigest = digest.FromString("_root") // arbitrary
+	}
 
-	loader := initGroup.Vertex("starting-engine", "connect")
+	loader := c.Recorder.Vertex(connectDigest, "connect", progrock.Internal())
 	defer func() {
 		loader.Done(rerr)
 	}()
@@ -213,7 +231,7 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 
 	sessionTask := loader.Task("starting session")
 
-	sharedKey := c.ServerID // share a session across servers
+	sharedKey := ""
 	bkSession, err := bksession.NewSession(ctx, identity.NewID(), sharedKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("new s: %w", err)
@@ -230,8 +248,12 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 		return nil, nil, fmt.Errorf("get workdir: %w", err)
 	}
 
-	c.labels = pipeline.LoadVCSLabels(workdir)
-	c.labels = append(c.labels, pipeline.LoadClientLabels(engine.Version)...)
+	labels := pipeline.Labels{}
+	labels.AppendCILabel()
+	labels = append(labels, pipeline.LoadVCSLabels(workdir)...)
+	labels = append(labels, pipeline.LoadClientLabels(engine.Version)...)
+
+	c.labels = labels
 
 	c.internalCtx = engine.ContextWithClientMetadata(c.internalCtx, &engine.ClientMetadata{
 		ClientID:           c.ID(),
@@ -261,7 +283,6 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 	bkSession.Allow(authprovider.NewDockerAuthProvider(config.LoadDefaultConfigFile(os.Stderr), nil))
 
 	// host=>container networking
-	c.Recorder = progrock.NewRecorder(progMultiW)
 	bkSession.Allow(session.NewTunnelListenerAttachable(c.Recorder))
 	ctx = progrock.ToContext(ctx, c.Recorder)
 
@@ -279,6 +300,8 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 				UpstreamCacheImportConfig: c.upstreamCacheImportOptions,
 				Labels:                    c.labels,
 				ModuleCallerDigest:        c.ModuleCallerDigest,
+				CloudToken:                os.Getenv("DAGGER_CLOUD_TOKEN"),
+				DoNotTrack:                analytics.DoNotTrack(),
 			}.AppendToMD(meta))
 		})
 	})
@@ -293,7 +316,7 @@ func Connect(ctx context.Context, params Params) (_ *Client, _ context.Context, 
 	}}
 
 	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = 100 * time.Millisecond
+	bo.InitialInterval = 10 * time.Millisecond
 	connectRetryCtx, connectRetryCancel := context.WithTimeout(ctx, 300*time.Second)
 	defer connectRetryCancel()
 	err = backoff.Retry(func() error {
@@ -531,7 +554,7 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(w, resp.Body)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		panic(err) // don't write header because we already wrote to the body, which isn't allowed
 	}
 }
@@ -687,6 +710,20 @@ func (s AnyDirSource) DiffCopy(stream filesync.FileSync_DiffCopyServer) error {
 			return fmt.Errorf("file contents too large: %d > %d", len(fileContents), opts.MaxFileSize)
 		}
 		return stream.SendMsg(&filesync.BytesMessage{Data: fileContents})
+	}
+
+	if opts.StatPathOnly {
+		stat, err := fsutil.Stat(opts.Path)
+		if err != nil {
+			return fmt.Errorf("stat path: %w", err)
+		}
+		if opts.StatReturnAbsPath {
+			stat.Path, err = filepath.Abs(opts.Path)
+			if err != nil {
+				return fmt.Errorf("get abs path: %w", err)
+			}
+		}
+		return stream.SendMsg(stat)
 	}
 
 	// otherwise, do the whole directory sync back to the caller

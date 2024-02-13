@@ -32,6 +32,7 @@ func (s *querySchema) Install() {
 	core.ImageMediaTypesEnum.Install(s.srv)
 	core.CacheSharingModes.Install(s.srv)
 	core.TypeDefKinds.Install(s.srv)
+	core.ModuleSourceKindEnum.Install(s.srv)
 
 	dagql.MustInputSpec(pipeline.Label{}).Install(s.srv)
 	dagql.MustInputSpec(core.PortForward{}).Install(s.srv)
@@ -78,7 +79,7 @@ func (s *querySchema) checkVersionCompatibility(ctx context.Context, _ *core.Que
 	recorder := progrock.FromContext(ctx)
 
 	// Skip development version
-	if strings.Contains(engine.Version, "devel") {
+	if _, err := semver.Parse(engine.Version); err != nil {
 		recorder.Debug("Using development engine; skipping version compatibility check.")
 		return true, nil
 	}

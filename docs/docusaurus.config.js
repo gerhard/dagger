@@ -72,7 +72,6 @@ const config = {
   plugins: [
     "docusaurus-plugin-sass",
     "docusaurus-plugin-image-zoom",
-    path.resolve(__dirname, "plugins/docusaurus-plugin-hotjar"),
     path.resolve(__dirname, "plugins/docusaurus-plugin-guides"),
     [
       "posthog-docusaurus",
@@ -84,6 +83,7 @@ const config = {
     [
         "docusaurus-plugin-typedoc",
         {
+          id: "current-generation",
           entryPoints: ['../sdk/typescript/connect.ts', '../sdk/typescript/api/client.gen.ts', '../sdk/typescript/common/errors/index.ts'],
           tsconfig: '../sdk/typescript/tsconfig.json',
           // Still nodejs in the reference for now
@@ -99,6 +99,30 @@ const config = {
             displayed_sidebar: 'current',
             sidebar_label: 'Reference',
             title: "Dagger NodeJS SDK"
+          },
+          hideMembersSymbol: true,
+          requiredToBeDocumented: ["Class"]
+        },
+      ],
+      [
+        "docusaurus-plugin-typedoc",
+        {
+          id: "zenith-generation",
+          entryPoints: ['../sdk/typescript/connect.ts', '../sdk/typescript/api/client.gen.ts', '../sdk/typescript/common/errors/index.ts'],
+          tsconfig: '../sdk/typescript/tsconfig.json',
+          // Zenith reference
+          out: '../versioned_docs/version-zenith/developer/typescript/reference/',
+          excludeProtected: true,
+          exclude: '../sdk/typescript/node_modules/**',
+          skipErrorChecking: true,
+          disableSources: true,
+          sidebar: {
+            categoryLabel: 'TypeScript SDK Reference',
+          },
+          frontmatter: {
+            displayed_sidebar: 'zenith',
+            sidebar_label: 'TypeScript SDK Reference',
+            title: "TypeScript SDK Reference"
           },
           hideMembersSymbol: true,
           requiredToBeDocumented: ["Class"]
@@ -120,6 +144,7 @@ const config = {
           alt: "Dagger Logo",
           src: "img/dagger-logo-white.svg",
           height: "50px",
+          href: "https://dagger.io/"
         },
         items: [
           {
@@ -150,9 +175,6 @@ const config = {
         apiKey: "bffda1490c07dcce81a26a144115cc02",
         indexName: "dagger",
         appId: "XEIYPBWGOI",
-      },
-      hotjar: {
-        siteId: "2541514",
       },
       colorMode: {
         defaultMode: "light",
