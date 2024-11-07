@@ -18,8 +18,9 @@ inputs:
 
   dev-engine:
     description: "Whether to run against a dev Engine"
-    default: "false"
-    required: false
+    type: string
+    default: false
+    required: "false"
 
   redirect:
     description: "Filepath to redirect result to"
@@ -60,15 +61,15 @@ runs:
         fi
 
     - name: Install go
+      if: ${{ inputs.dev-engine != "false" }}
       uses: actions/setup-go@v5
-      if: inputs.dev-engine == 'true'
       with:
         go-version: "1.23"
         cache-dependency-path: ".dagger/go.sum"
 
     - name: Start dev dagger
+      if: ${{ inputs.dev-engine != "false" }}
       shell: bash
-      if: inputs.dev-engine == 'true'
       run: |
         echo "::group::Starting dev engine"
         if ! [[ -x "$(command -v docker)" ]]; then
@@ -87,6 +88,7 @@ runs:
         # is the name of the pod, and each pod runs a single dedicated job.
         _EXPERIMENTAL_DAGGER_DEV_OUTPUT: ./bin/dev-${{ runner.name }}
         _EXPERIMENTAL_DAGGER_DEV_CONTAINER: dagger-engine.dev-${{ runner.name }}
+        DAGGER_CLOUD_TOKEN: "dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw"
 
     - name: Wait for dagger to be ready
       shell: bash
@@ -98,8 +100,10 @@ runs:
         echo "::endgroup::"
 
         echo "::group::Dagger server version"
-        echo "{version}" | dagger --silent query
+        dagger --silent core version
         echo "::endgroup::"
+      env:
+        DAGGER_CLOUD_TOKEN: "dag_dagger_sBIv6DsjNerWvTqt2bSFeigBUqWxp9bhh3ONSSgeFnw"
 
     - name: ${{ inputs.function }}
       shell: bash
@@ -139,13 +143,13 @@ runs:
         overwrite: true
 
     - name: Capture dev engine logs
-      if: always() && inputs.dev-engine == 'true'
+      if: ${{ always() && inputs.dev-engine }}
       shell: bash
       run: |
         docker logs dagger-engine.dev-${{ runner.name }} &> /tmp/actions/call/engine.log
 
     - name: Archive engine logs
-      if: always() && inputs.dev-engine == 'true'
+      if: ${{ always() && inputs.dev-engine }}
       uses: actions/upload-artifact@v4
       with:
         name: engine-logs-${{ runner.name }}

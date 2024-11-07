@@ -1,0 +1,25 @@
+name: Alternative Runners
+
+on:
+  # Run the workflow every day at 1AM UTC
+  # That's 2AM CET, 8PM EST & 5PM PST
+  schedule:
+    - cron: "0 1 * * *"
+  # Enable manual trigger for easy debugging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  elixir-on-namespace:
+    uses: ./.github/workflows/_dagger_on_namespace.yml
+    with:
+      function: check --targets=sdk/elixir
+      size: "16x32"
+  elixir-dev-on-namespace:
+    uses: ./.github/workflows/_dagger_on_namespace.yml
+    with:
+      function: check --targets=sdk/elixir
+      size: "16x32"
+      dev: true
