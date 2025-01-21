@@ -39,6 +39,10 @@ const config: Config = {
       src: '/js/commonroom.js',
       async: true,
     },
+    {
+      src: '/js/daggerai.js',
+      async: true,
+    },
   ],
   presets: [
     [
